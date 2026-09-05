@@ -1,22 +1,39 @@
+# ==============================================================================
+# SENTINEL GUJARAT — Docker Compose
+# Requires a .env file in this directory (copy from .env.example).
+# Start everything:  docker compose up -d
+# Or use the one-click launcher: sentinel.bat
+# ==============================================================================
+
 services:
+
+  # ----------------------------------------------------------------------------
+  # PostgreSQL 16 + PostGIS 3.4
+  # ----------------------------------------------------------------------------
   db:
     image: postgis/postgis:16-3.4
+    container_name: sentinel_db
     environment:
-      POSTGRES_USER: sentinel
-      POSTGRES_PASSWORD: sentinel
-      POSTGRES_DB: sentinel_gujarat
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: sentinel_db
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U sentinel -d sentinel_gujarat"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d sentinel_db"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 15
+    restart: unless-stopped
 
+  # ----------------------------------------------------------------------------
+  # Redis 7
+  # ----------------------------------------------------------------------------
   redis:
     image: redis:7-alpine
+    container_name: sentinel_redis
     ports:
       - "6379:6379"
     healthcheck:
@@ -24,21 +41,38 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
 
+  # ----------------------------------------------------------------------------
+  # FastAPI Backend  (port 8000)
+  # ----------------------------------------------------------------------------
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sentinel_backend
     ports:
       - "8000:8000"
+    # Load the shared .env, then override Docker-internal service addresses.
+    env_file: .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://sentinel:sentinel@db:5432/sentinel_gujarat
+      # Always point to compose service names inside Docker networking.
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/sentinel_db
       REDIS_URL: redis://redis:6379/0
-      SANDBOX_HOST: ${SANDBOX_HOST:-host.docker.internal}
-      SANDBOX_INGEST_URL: ${SANDBOX_INGEST_URL:-http://host.docker.internal/api/ingest}
-      SANDBOX_WHEP_BASE: ${SANDBOX_WHEP_BASE:-http://host.docker.internal:8889/stream}
-      SANDBOX_HLS_BASE: ${SANDBOX_HLS_BASE:-http://host.docker.internal/live/stream}
-      CATALOG_REFRESH_SECONDS: "60"
-      CORS_ORIGINS: http://localhost:5173,http://localhost:3000
-      OPENCV_FFMPEG_CAPTURE_OPTIONS: rtsp_transport;tcp
+      # Sandbox
+      SANDBOX_HOST: ${SANDBOX_HOST:-cctv.corp8.cloud}
+      SANDBOX_INGEST_URL: ${SANDBOX_INGEST_URL:-https://cctv.corp8.cloud/cameras.json}
+      SANDBOX_HLS_BASE: ${SANDBOX_HLS_BASE:-https://cctv.corp8.cloud}
+      SANDBOX_WHEP_BASE: ${SANDBOX_WHEP_BASE:-http://103.250.160.189:8889/stream}
+      SANDBOX_RTSP_HOST: ${SANDBOX_RTSP_HOST:-103.250.160.189:8554}
+      SANDBOX_EMAIL: ${SANDBOX_EMAIL:-}
+      SANDBOX_PASSWORD: ${SANDBOX_PASSWORD:-}
+      CATALOG_AUTO_SYNC: ${CATALOG_AUTO_SYNC:-false}
+      CATALOG_REFRESH_SECONDS: ${CATALOG_REFRESH_SECONDS:-3600}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      STREAM_IDLE_SECONDS: ${STREAM_IDLE_SECONDS:-120}
+      OPENCV_FFMPEG_CAPTURE_OPTIONS: ${OPENCV_FFMPEG_CAPTURE_OPTIONS:-rtsp_transport;tcp}
+    # Allow containers to reach the host machine (e.g. sandbox on host network).
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -46,17 +80,32 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    restart: unless-stopped
 
+  # ----------------------------------------------------------------------------
+  # OpenCV Capture Worker
+  # ----------------------------------------------------------------------------
   worker:
-    build: ./worker
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    container_name: sentinel_worker
+    env_file: .env
     environment:
-      SANDBOX_HOST: ${SANDBOX_HOST:-host.docker.internal}
-      SANDBOX_INGEST_URL: ${SANDBOX_INGEST_URL:-http://host.docker.internal/api/ingest}
-      BACKEND_URL: http://backend:8000
+      # Docker-internal service addresses.
       REDIS_URL: redis://redis:6379/0
-      OPENCV_FFMPEG_CAPTURE_OPTIONS: rtsp_transport;tcp
-      CATALOG_REFRESH_SECONDS: "60"
-      ACTIVE_POLL_SECONDS: "5"
+      BACKEND_URL: http://backend:8000
+      # Sandbox
+      SANDBOX_HOST: ${SANDBOX_HOST:-cctv.corp8.cloud}
+      SANDBOX_INGEST_URL: ${SANDBOX_INGEST_URL:-https://cctv.corp8.cloud/cameras.json}
+      SANDBOX_HLS_BASE: ${SANDBOX_HLS_BASE:-https://cctv.corp8.cloud}
+      SANDBOX_WHEP_BASE: ${SANDBOX_WHEP_BASE:-http://103.250.160.189:8889/stream}
+      SANDBOX_RTSP_HOST: ${SANDBOX_RTSP_HOST:-103.250.160.189:8554}
+      SANDBOX_EMAIL: ${SANDBOX_EMAIL:-}
+      SANDBOX_PASSWORD: ${SANDBOX_PASSWORD:-}
+      CATALOG_REFRESH_SECONDS: ${CATALOG_REFRESH_SECONDS:-60}
+      ACTIVE_POLL_SECONDS: ${ACTIVE_POLL_SECONDS:-5}
+      OPENCV_FFMPEG_CAPTURE_OPTIONS: ${OPENCV_FFMPEG_CAPTURE_OPTIONS:-rtsp_transport;tcp}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -64,16 +113,30 @@ services:
         condition: service_started
       redis:
         condition: service_healthy
+    restart: unless-stopped
 
+  # ----------------------------------------------------------------------------
+  # React + Vite Frontend  (port 5173)
+  # ----------------------------------------------------------------------------
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: sentinel_frontend
     ports:
       - "5173:5173"
+    env_file: .env
     environment:
-      VITE_API_BASE: http://localhost:8000
-      VITE_SANDBOX_HOST: ${SANDBOX_HOST:-localhost}
+      # Browser-facing URL — must be reachable from the user's machine.
+      VITE_API_BASE: ${VITE_API_BASE:-http://localhost:8000}
+      VITE_SANDBOX_HOST: ${SANDBOX_HOST}
     depends_on:
       - backend
+    restart: unless-stopped
 
+# ------------------------------------------------------------------------------
+# Named Volumes
+# ------------------------------------------------------------------------------
 volumes:
   pgdata:
+    name: sentinel_pgdata
