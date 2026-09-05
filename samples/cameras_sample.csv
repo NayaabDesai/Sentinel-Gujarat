@@ -1,0 +1,6 @@
+external_id,name,department,latitude,longitude,heading,fov,range,rtsp
+GJ-AHM-001,Ashram Road Junction,POLICE,23.033,72.567,45,90,180,
+GJ-AHM-002,SG Highway Flyover,POLICE,23.050,72.520,120,70,220,
+GJ-SRT-001,Ring Road Circle,TRAFFIC,21.170,72.831,0,110,200,
+GJ-RJK-001,Race Course Road,MUNICIPAL,22.303,70.802,270,80,150,
+GJ-VAD-001,Sayajigunj Crossing,HOME,22.310,73.181,90,100,175,

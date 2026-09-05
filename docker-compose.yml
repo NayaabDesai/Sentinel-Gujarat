@@ -1,0 +1,79 @@
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: sentinel
+      POSTGRES_PASSWORD: sentinel
+      POSTGRES_DB: sentinel_gujarat
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sentinel -d sentinel_gujarat"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://sentinel:sentinel@db:5432/sentinel_gujarat
+      REDIS_URL: redis://redis:6379/0
+      SANDBOX_HOST: ${SANDBOX_HOST:-host.docker.internal}
+      SANDBOX_INGEST_URL: ${SANDBOX_INGEST_URL:-http://host.docker.internal/api/ingest}
+      SANDBOX_WHEP_BASE: ${SANDBOX_WHEP_BASE:-http://host.docker.internal:8889/stream}
+      SANDBOX_HLS_BASE: ${SANDBOX_HLS_BASE:-http://host.docker.internal/live/stream}
+      CATALOG_REFRESH_SECONDS: "60"
+      CORS_ORIGINS: http://localhost:5173,http://localhost:3000
+      OPENCV_FFMPEG_CAPTURE_OPTIONS: rtsp_transport;tcp
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: ./worker
+    environment:
+      SANDBOX_HOST: ${SANDBOX_HOST:-host.docker.internal}
+      SANDBOX_INGEST_URL: ${SANDBOX_INGEST_URL:-http://host.docker.internal/api/ingest}
+      BACKEND_URL: http://backend:8000
+      REDIS_URL: redis://redis:6379/0
+      OPENCV_FFMPEG_CAPTURE_OPTIONS: rtsp_transport;tcp
+      CATALOG_REFRESH_SECONDS: "60"
+      ACTIVE_POLL_SECONDS: "5"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      backend:
+        condition: service_started
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_BASE: http://localhost:8000
+      VITE_SANDBOX_HOST: ${SANDBOX_HOST:-localhost}
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
