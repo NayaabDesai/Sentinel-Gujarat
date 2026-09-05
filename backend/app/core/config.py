@@ -38,6 +38,13 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
     OPENCV_FFMPEG_CAPTURE_OPTIONS: str = "rtsp_transport;tcp"
 
+    # --- Auth (JWT) ---
+    SECRET_KEY: str = "sentinel-gujarat-dev-secret-change-in-prod"
+    ACCESS_TOKEN_EXPIRE_HOURS: int = 12
+    ALGORITHM: str = "HS256"
+    # Shared secret for capture worker → backend (not exposed to browser)
+    INTERNAL_SERVICE_KEY: str = "sentinel-worker-internal-key"
+
     # -------------------------------------------------------------------------
     # Derived helpers
     # -------------------------------------------------------------------------

@@ -3,10 +3,11 @@
 @tailwind utilities;
 
 :root {
-  --ink-950: #0b1220;
-  --ink-900: #111b2e;
-  --saffron: #e8872a;
-  --forest: #2d7a52;
+  --ink-950: #090d16;
+  --ink-900: #0e1420;
+  --saffron: #f59e0b;
+  --forest: #10b981;
+  --rose: #f43f5e;
   --chalk: #e8eef7;
 }
 
@@ -19,21 +20,33 @@ body,
 
 body {
   background:
-    radial-gradient(ellipse 80% 50% at 10% -10%, rgba(232, 135, 42, 0.12), transparent 50%),
-    radial-gradient(ellipse 60% 40% at 90% 0%, rgba(45, 122, 82, 0.1), transparent 45%),
-    linear-gradient(165deg, #0b1220 0%, #111b2e 45%, #0d1628 100%);
+    radial-gradient(ellipse 70% 45% at 8% -5%, rgba(16, 185, 129, 0.08), transparent 50%),
+    radial-gradient(ellipse 50% 35% at 95% 5%, rgba(245, 158, 11, 0.07), transparent 45%),
+    linear-gradient(165deg, #090d16 0%, #0e1420 50%, #0a1018 100%);
   background-attachment: fixed;
+  color: var(--chalk);
 }
 
 .maplibregl-popup-content {
-  background: #1a2740 !important;
+  background: #151c2c !important;
   color: #e8eef7 !important;
-  border-radius: 8px !important;
-  padding: 10px 12px !important;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border-radius: 6px !important;
+  padding: 8px 10px !important;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5) !important;
   font-family: "IBM Plex Sans", system-ui, sans-serif;
+  font-size: 12px !important;
 }
 
 .maplibregl-popup-tip {
-  border-top-color: #1a2740 !important;
+  border-top-color: #151c2c !important;
+}
+
+.maplibregl-ctrl-group {
+  background: #151c2c !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+}
+
+.maplibregl-ctrl button {
+  background-color: transparent !important;
 }

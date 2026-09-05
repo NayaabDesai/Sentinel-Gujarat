@@ -1,12 +1,15 @@
-import { useEffect, useId, useRef } from "react";
-import maplibregl, { Map, GeoJSONSource, LngLatLike } from "maplibre-gl";
+import { useCallback, useEffect, useRef } from "react";
+import maplibregl, { Map, GeoJSONSource, LngLatLike, MapMouseEvent } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { api } from "../../lib/api";
 
 type Props = {
   department?: string;
   showFov: boolean;
+  radiusMeters: number;
+  radar: { lon: number; lat: number } | null;
   onSelectCamera: (cameraId: string, props: Record<string, unknown>) => void;
+  onMapTap: (lat: number, lon: number) => void;
 };
 
 const GUJARAT_CENTER: LngLatLike = [71.2, 22.5];
@@ -30,11 +33,34 @@ function fovPolygon(
   return ring;
 }
 
-export default function GisMap({ department, showFov, onSelectCamera }: Props) {
+/** Approximate circle polygon in WGS84 for radar overlay */
+function circlePolygon(lon: number, lat: number, radiusM: number, steps = 64): number[][] {
+  const mLat = 111320;
+  const mLon = 111320 * Math.max(Math.cos((lat * Math.PI) / 180), 0.01);
+  const ring: number[][] = [];
+  for (let i = 0; i <= steps; i++) {
+    const a = (i / steps) * Math.PI * 2;
+    ring.push([lon + (radiusM * Math.cos(a)) / mLon, lat + (radiusM * Math.sin(a)) / mLat]);
+  }
+  return ring;
+}
+
+export default function GisMap({
+  department,
+  showFov,
+  radiusMeters,
+  radar,
+  onSelectCamera,
+  onMapTap,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<Map | null>(null);
-  const mapId = useId();
+  const onSelectRef = useRef(onSelectCamera);
+  const onTapRef = useRef(onMapTap);
+  onSelectRef.current = onSelectCamera;
+  onTapRef.current = onMapTap;
 
+  // Init map once
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
 
@@ -43,36 +69,32 @@ export default function GisMap({ department, showFov, onSelectCamera }: Props) {
       style: {
         version: 8,
         sources: {
-          osm: {
+          dark: {
             type: "raster",
-            tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+            tiles: [
+              "https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png",
+            ],
             tileSize: 256,
-            attribution: "© OpenStreetMap",
+            attribution: "© CARTO · © OpenStreetMap",
           },
         },
-        layers: [
-          {
-            id: "osm",
-            type: "raster",
-            source: "osm",
-            paint: { "raster-saturation": -0.35, "raster-brightness-min": 0.15 },
-          },
-        ],
+        layers: [{ id: "dark", type: "raster", source: "dark" }],
       },
       center: GUJARAT_CENTER,
-      zoom: 6.4,
+      zoom: 6.5,
+      maxPitch: 0,
     });
 
-    map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
+    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
     mapRef.current = map;
 
-    map.on("load", async () => {
+    map.on("load", () => {
       map.addSource("cameras", {
         type: "geojson",
         data: { type: "FeatureCollection", features: [] },
         cluster: true,
-        clusterMaxZoom: 12,
-        clusterRadius: 48,
+        clusterMaxZoom: 14,
+        clusterRadius: 50,
       });
 
       map.addSource("fov", {
@@ -80,20 +102,40 @@ export default function GisMap({ department, showFov, onSelectCamera }: Props) {
         data: { type: "FeatureCollection", features: [] },
       });
 
+      map.addSource("radar", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+
+      map.addLayer({
+        id: "radar-fill",
+        type: "fill",
+        source: "radar",
+        paint: { "fill-color": "#10b981", "fill-opacity": 0.12 },
+      });
+      map.addLayer({
+        id: "radar-line",
+        type: "line",
+        source: "radar",
+        paint: {
+          "line-color": "#10b981",
+          "line-width": 1.5,
+          "line-opacity": 0.85,
+          "line-dasharray": [2, 1],
+        },
+      });
+
       map.addLayer({
         id: "fov-fill",
         type: "fill",
         source: "fov",
-        paint: {
-          "fill-color": "#e8872a",
-          "fill-opacity": 0.18,
-        },
+        paint: { "fill-color": "#f59e0b", "fill-opacity": 0.16 },
       });
       map.addLayer({
         id: "fov-outline",
         type: "line",
         source: "fov",
-        paint: { "line-color": "#f0a04b", "line-width": 1, "line-opacity": 0.55 },
+        paint: { "line-color": "#fbbf24", "line-width": 1, "line-opacity": 0.5 },
       });
 
       map.addLayer({
@@ -102,25 +144,20 @@ export default function GisMap({ department, showFov, onSelectCamera }: Props) {
         source: "cameras",
         filter: ["has", "point_count"],
         paint: {
-          "circle-color": "#2d7a52",
-          "circle-radius": ["step", ["get", "point_count"], 16, 25, 22, 100, 30],
-          "circle-stroke-width": 2,
-          "circle-stroke-color": "#e8eef7",
+          "circle-color": "#10b981",
+          "circle-radius": ["step", ["get", "point_count"], 15, 25, 20, 100, 28],
+          "circle-stroke-width": 1.5,
+          "circle-stroke-color": "#090d16",
         },
       });
-
       map.addLayer({
         id: "cluster-count",
         type: "symbol",
         source: "cameras",
         filter: ["has", "point_count"],
-        layout: {
-          "text-field": "{point_count_abbreviated}",
-          "text-size": 12,
-        },
-        paint: { "text-color": "#e8eef7" },
+        layout: { "text-field": "{point_count_abbreviated}", "text-size": 11 },
+        paint: { "text-color": "#090d16" },
       });
-
       map.addLayer({
         id: "camera-points",
         type: "circle",
@@ -132,12 +169,12 @@ export default function GisMap({ department, showFov, onSelectCamera }: Props) {
             "match",
             ["get", "status"],
             "online",
-            "#3d9a6a",
+            "#10b981",
             "degraded",
-            "#e8872a",
+            "#f59e0b",
             "offline",
-            "#c44b4b",
-            "#7a8aa0",
+            "#f43f5e",
+            "#64748b",
           ],
           "circle-stroke-width": 1.5,
           "circle-stroke-color": "#e8eef7",
@@ -150,23 +187,32 @@ export default function GisMap({ department, showFov, onSelectCamera }: Props) {
         const source = map.getSource("cameras") as GeoJSONSource;
         if (clusterId == null) return;
         const zoom = await source.getClusterExpansionZoom(clusterId);
-        const geom = features[0].geometry as { type: string; coordinates: number[] };
-        const coords = geom.coordinates as [number, number];
-        map.easeTo({ center: coords, zoom });
+        const geom = features[0].geometry as { coordinates: number[] };
+        map.easeTo({ center: geom.coordinates as [number, number], zoom });
       });
 
       map.on("click", "camera-points", (e) => {
+        e.originalEvent.stopPropagation();
         const f = e.features?.[0];
         if (!f?.properties) return;
         const id = String(f.properties.id);
-        onSelectCamera(id, f.properties as Record<string, unknown>);
-        const geom = f.geometry as { type: string; coordinates: number[] };
-        new maplibregl.Popup()
+        onSelectRef.current(id, f.properties as Record<string, unknown>);
+        const geom = f.geometry as { coordinates: number[] };
+        new maplibregl.Popup({ closeButton: false, maxWidth: "220px" })
           .setLngLat(geom.coordinates as [number, number])
           .setHTML(
-            `<strong>${f.properties.name}</strong><br/><span style="opacity:.75">${f.properties.department || "—"} · ${f.properties.status}</span>`
+            `<strong>${f.properties.name}</strong><br/><span style="opacity:.7;font-family:monospace;font-size:10px">${f.properties.department || "—"} · ${f.properties.status}</span>`
           )
           .addTo(map);
+      });
+
+      map.on("click", (e: MapMouseEvent) => {
+        // Ignore clicks that hit camera points / clusters
+        const hits = map.queryRenderedFeatures(e.point, {
+          layers: ["camera-points", "clusters"],
+        });
+        if (hits.length) return;
+        onTapRef.current(e.lngLat.lat, e.lngLat.lng);
       });
 
       map.on("mouseenter", "camera-points", () => {
@@ -181,63 +227,111 @@ export default function GisMap({ department, showFov, onSelectCamera }: Props) {
       map.remove();
       mapRef.current = null;
     };
-  }, [mapId, onSelectCamera]);
+  }, []);
 
+  // Update GeoJSON via setData — no remount
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
 
-    const load = async () => {
+    const apply = async () => {
       try {
         const fc = await api.geojson(department || undefined);
-        const apply = () => {
-          const camSrc = map.getSource("cameras") as GeoJSONSource | undefined;
-          const fovSrc = map.getSource("fov") as GeoJSONSource | undefined;
-          if (!camSrc) return;
-          camSrc.setData(fc as unknown as GeoJSON.FeatureCollection);
+        const camSrc = map.getSource("cameras") as GeoJSONSource | undefined;
+        const fovSrc = map.getSource("fov") as GeoJSONSource | undefined;
+        if (!camSrc) return;
+        camSrc.setData(fc as unknown as GeoJSON.FeatureCollection);
 
-          const fovFeatures = showFov
-            ? fc.features
-                .map((f) => {
-                  const p = f.properties || {};
-                  const coords = f.geometry.coordinates;
-                  const heading = Number(p.heading_deg);
-                  const fov = Number(p.fov_deg);
-                  const range = Number(p.range_m);
-                  if (!coords || Number.isNaN(heading) || !fov || !range) return null;
-                  return {
-                    type: "Feature" as const,
-                    geometry: {
-                      type: "Polygon" as const,
-                      coordinates: [fovPolygon(coords[0], coords[1], heading, fov, range)],
-                    },
-                    properties: { id: p.id },
-                  };
-                })
-                .filter(Boolean)
-            : [];
+        const fovFeatures = showFov
+          ? fc.features
+              .map((f) => {
+                const p = f.properties || {};
+                const coords = f.geometry.coordinates;
+                const heading = Number(p.heading_deg);
+                const fov = Number(p.fov_deg);
+                const range = Number(p.range_m);
+                if (!coords || Number.isNaN(heading) || !fov || !range) return null;
+                return {
+                  type: "Feature" as const,
+                  geometry: {
+                    type: "Polygon" as const,
+                    coordinates: [fovPolygon(coords[0], coords[1], heading, fov, range)],
+                  },
+                  properties: { id: p.id },
+                };
+              })
+              .filter(Boolean)
+          : [];
 
-          fovSrc?.setData({
-            type: "FeatureCollection",
-            features: fovFeatures as GeoJSON.Feature[],
-          });
-        };
-
-        if (map.isStyleLoaded()) apply();
-        else map.once("load", apply);
+        fovSrc?.setData({
+          type: "FeatureCollection",
+          features: fovFeatures as GeoJSON.Feature[],
+        });
       } catch (err) {
         console.error("Failed to load camera geojson", err);
       }
     };
 
-    load();
+    if (map.isStyleLoaded()) apply();
+    else map.once("load", apply);
   }, [department, showFov]);
 
+  // Radar circle update
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const src = map.getSource("radar") as GeoJSONSource | undefined;
+    if (!src) return;
+    if (!radar) {
+      src.setData({ type: "FeatureCollection", features: [] });
+      return;
+    }
+    src.setData({
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          geometry: {
+            type: "Polygon",
+            coordinates: [circlePolygon(radar.lon, radar.lat, radiusMeters)],
+          },
+          properties: {},
+        },
+        {
+          type: "Feature",
+          geometry: { type: "Point", coordinates: [radar.lon, radar.lat] },
+          properties: { kind: "center" },
+        },
+      ],
+    });
+  }, [radar, radiusMeters]);
+
+  const flyTo = useCallback((lon: number, lat: number, zoom = 14) => {
+    mapRef.current?.easeTo({ center: [lon, lat], zoom, duration: 600 });
+  }, []);
+
+  // Expose flyTo via custom event for FOV lock from parent (lightweight)
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { lon: number; lat: number; zoom?: number };
+      if (detail) flyTo(detail.lon, detail.lat, detail.zoom ?? 14);
+    };
+    window.addEventListener("sentinel-flyto", handler);
+    return () => window.removeEventListener("sentinel-flyto", handler);
+  }, [flyTo]);
+
   return (
-    <div
-      ref={containerRef}
-      className="h-full w-full overflow-hidden rounded-lg border border-white/10 shadow-panel"
-      aria-label="Gujarat CCTV GIS map"
-    />
+    <div className="relative h-full w-full overflow-hidden border border-white/10 shadow-panel">
+      <div
+        ref={containerRef}
+        className="h-full w-full"
+        aria-label="Gujarat CCTV GIS map"
+      />
+      {radar && (
+        <div className="pointer-events-none absolute left-3 top-3 border border-forest-500/30 bg-ink-950/80 px-2 py-1 font-mono text-[9px] uppercase tracking-wider text-forest-400">
+          Sector scan · {radiusMeters} m
+        </div>
+      )}
+    </div>
   );
 }

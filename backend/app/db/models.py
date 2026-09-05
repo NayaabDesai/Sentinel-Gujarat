@@ -38,6 +38,12 @@ class AlertSeverity(str, enum.Enum):
     CRITICAL = "critical"
 
 
+class UserRole(str, enum.Enum):
+    ADMIN = "ADMIN"
+    OPERATOR = "OPERATOR"
+    VIEWER = "VIEWER"
+
+
 class Department(Base):
     __tablename__ = "departments"
 
@@ -47,7 +53,25 @@ class Department(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    cameras: Mapped[list[Camera]] = relationship(back_populates="department")
+    cameras: Mapped[list["Camera"]] = relationship(back_populates="department")
+
+
+class User(Base):
+    """Police command-center accounts (seeded — no public registration)."""
+
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    hashed_password: Mapped[str] = mapped_column(String(255))
+    department_code: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    role: Mapped[UserRole] = mapped_column(
+        Enum(UserRole, name="user_role", values_callable=lambda obj: [e.value for e in obj]),
+        default=UserRole.VIEWER,
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Camera(Base):

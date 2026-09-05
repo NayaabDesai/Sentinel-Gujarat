@@ -9,9 +9,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.v1 import analytics, cameras, ingest, stream
+from app.api.v1 import analytics, auth, cameras, ingest, stream
 from app.core.config import settings
-from app.db.session import engine, init_db
+from app.db.seed import seed_users
+from app.db.session import AsyncSessionLocal, engine, init_db
 from app.services.catalog_sync import CatalogSyncWorker
 
 logging.basicConfig(
@@ -26,6 +27,8 @@ catalog_worker = CatalogSyncWorker()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    async with AsyncSessionLocal() as db:
+        await seed_users(db)
     task = asyncio.create_task(catalog_worker.run())
     logger.info("Sentinel Gujarat API started (sandbox=%s)", settings.SANDBOX_HOST)
     yield
@@ -53,6 +56,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
 app.include_router(cameras.router, prefix="/api/v1/cameras", tags=["cameras"])
 app.include_router(ingest.router, prefix="/api/v1/ingest", tags=["ingest"])
 app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["analytics"])

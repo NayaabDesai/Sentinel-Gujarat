@@ -15,17 +15,20 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.api.deps import get_current_active_user
 from app.core.config import settings
-from app.db.models import Camera, CameraStatus, Department
+from app.db.models import Camera, CameraStatus, Department, User
 from app.db.session import get_db
 from app.schemas.camera import (
     BulkUploadResult,
     CameraCreate,
+    CameraNearbyOut,
     CameraOut,
     CameraUpdate,
 )
+from app.services.spatial import find_nearby_cameras
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_active_user)])
 
 
 def _fov_wkt(lon: float, lat: float, heading: float, fov: float, range_m: float) -> str:
@@ -183,6 +186,64 @@ async def spatial_search(
     q = select(Camera).options(selectinload(Camera.department)).where(Camera.id.in_(ids))
     cams = {c.id: c for c in (await db.execute(q)).scalars().all()}
     return [_camera_out(cams[i]) for i in ids if i in cams]
+
+
+@router.get("/nearby", response_model=list[CameraNearbyOut])
+async def cameras_nearby(
+    lat: float = Query(..., ge=-90, le=90),
+    lon: float = Query(..., ge=-180, le=180),
+    radius_meters: float = Query(500.0, gt=0, le=100_000),
+    limit: int = Query(10, ge=1, le=100),
+    department: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    _user: User | None = Depends(get_current_active_user),
+):
+    """
+    Tap-to-discover: cameras near a map click, sorted by distance_meters.
+    Falls back to KNN nearest neighbours if the radius is empty.
+    """
+    rows = await find_nearby_cameras(
+        db,
+        lat=lat,
+        lon=lon,
+        radius_meters=radius_meters,
+        limit=limit,
+        department=department,
+    )
+    # Detect KNN fallback: any row beyond radius means we fell through
+    used_knn = bool(rows) and all(
+        float(r["distance_meters"]) > radius_meters for r in rows
+    )
+    out: list[CameraNearbyOut] = []
+    for r in rows:
+        stream_id = r.get("whep_path") or r["external_id"]
+        status_raw = str(r.get("status") or "unknown").lower().replace("camerastatus.", "")
+        if status_raw not in ("online", "offline", "degraded", "unknown"):
+            status_raw = "unknown"
+        out.append(
+            CameraNearbyOut(
+                id=r["id"],
+                external_id=r["external_id"],
+                name=r["name"],
+                department_code=r.get("department_code"),
+                latitude=r.get("latitude"),
+                longitude=r.get("longitude"),
+                altitude_m=None,
+                heading_deg=r.get("heading_deg"),
+                fov_deg=r.get("fov_deg"),
+                range_m=r.get("range_m"),
+                status=status_raw,
+                is_active=True,
+                whep_url=settings.whep_url(stream_id),
+                hls_url=settings.hls_url(r.get("hls_path") or r["external_id"]),
+                last_seen_at=None,
+                installed_at=None,
+                meta=None,
+                distance_meters=float(r["distance_meters"]),
+                knn_fallback=used_knn or float(r["distance_meters"]) > radius_meters,
+            )
+        )
+    return out
 
 
 @router.get("/meta/departments")

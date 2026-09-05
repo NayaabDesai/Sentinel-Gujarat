@@ -78,6 +78,13 @@ class CameraOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class CameraNearbyOut(CameraOut):
+    """Camera with metre distance from a map tap / query point."""
+
+    distance_meters: float
+    knn_fallback: bool = False
+
+
 class BulkCameraItem(CameraCreate):
     """Single row from CSV / Excel / GeoJSON feature properties."""
 

@@ -69,6 +69,8 @@ services:
       SANDBOX_PASSWORD: ${SANDBOX_PASSWORD:-}
       CATALOG_AUTO_SYNC: ${CATALOG_AUTO_SYNC:-false}
       CATALOG_REFRESH_SECONDS: ${CATALOG_REFRESH_SECONDS:-3600}
+      SECRET_KEY: ${SECRET_KEY:-sentinel-gujarat-dev-secret-change-in-prod}
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-sentinel-worker-internal-key}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
       STREAM_IDLE_SECONDS: ${STREAM_IDLE_SECONDS:-120}
       OPENCV_FFMPEG_CAPTURE_OPTIONS: ${OPENCV_FFMPEG_CAPTURE_OPTIONS:-rtsp_transport;tcp}
@@ -105,6 +107,7 @@ services:
       SANDBOX_PASSWORD: ${SANDBOX_PASSWORD:-}
       CATALOG_REFRESH_SECONDS: ${CATALOG_REFRESH_SECONDS:-60}
       ACTIVE_POLL_SECONDS: ${ACTIVE_POLL_SECONDS:-5}
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-sentinel-worker-internal-key}
       OPENCV_FFMPEG_CAPTURE_OPTIONS: ${OPENCV_FFMPEG_CAPTURE_OPTIONS:-rtsp_transport;tcp}
     extra_hosts:
       - "host.docker.internal:host-gateway"

@@ -11,8 +11,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.api.deps import get_current_active_user
 from app.core.config import settings
-from app.db.models import Camera, StreamSession
+from app.db.models import Camera, StreamSession, User
 from app.db.session import get_db
 
 router = APIRouter()
@@ -41,7 +42,11 @@ class SessionOut(BaseModel):
 
 
 @router.post("/sessions", response_model=SessionOut)
-async def start_session(payload: SessionStart, db: AsyncSession = Depends(get_db)):
+async def start_session(
+    payload: SessionStart,
+    db: AsyncSession = Depends(get_db),
+    _user: User | None = Depends(get_current_active_user),
+):
     """Open an on-demand stream session. RTSP/WHEP is only used while sessions are active."""
     q = select(Camera).options(selectinload(Camera.department)).where(
         Camera.id == payload.camera_id, Camera.is_active.is_(True)
@@ -90,7 +95,11 @@ async def start_session(payload: SessionStart, db: AsyncSession = Depends(get_db
 
 
 @router.post("/sessions/heartbeat")
-async def heartbeat(payload: SessionHeartbeat, db: AsyncSession = Depends(get_db)):
+async def heartbeat(
+    payload: SessionHeartbeat,
+    db: AsyncSession = Depends(get_db),
+    _user: User | None = Depends(get_current_active_user),
+):
     session = (
         await db.execute(
             select(StreamSession).where(
@@ -106,7 +115,12 @@ async def heartbeat(payload: SessionHeartbeat, db: AsyncSession = Depends(get_db
 
 
 @router.delete("/sessions/{session_id}")
-async def end_session(session_id: uuid.UUID, client_id: str, db: AsyncSession = Depends(get_db)):
+async def end_session(
+    session_id: uuid.UUID,
+    client_id: str,
+    db: AsyncSession = Depends(get_db),
+    _user: User | None = Depends(get_current_active_user),
+):
     session = (
         await db.execute(
             select(StreamSession).where(
@@ -125,7 +139,10 @@ async def end_session(session_id: uuid.UUID, client_id: str, db: AsyncSession = 
 
 
 @router.get("/active")
-async def list_active(db: AsyncSession = Depends(get_db)):
+async def list_active(
+    db: AsyncSession = Depends(get_db),
+    _user: User | None = Depends(get_current_active_user),
+):
     """Workers poll this to know which cameras need RTSP/WHEP open."""
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=settings.STREAM_IDLE_SECONDS)
     # Expire stale sessions

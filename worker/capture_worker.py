@@ -47,12 +47,17 @@ SANDBOX_RTSP_HOST   = os.environ.get("SANDBOX_RTSP_HOST",   "103.250.160.189:855
 SANDBOX_EMAIL       = os.environ.get("SANDBOX_EMAIL",        "")
 SANDBOX_PASSWORD    = os.environ.get("SANDBOX_PASSWORD",     "")
 BACKEND_URL         = os.environ.get("BACKEND_URL",          "http://localhost:8000")
+INTERNAL_SERVICE_KEY = os.environ.get("INTERNAL_SERVICE_KEY", "sentinel-worker-internal-key")
 CATALOG_REFRESH_SECONDS = int(os.environ.get("CATALOG_REFRESH_SECONDS", "60"))
 ACTIVE_POLL_SECONDS     = float(os.environ.get("ACTIVE_POLL_SECONDS", "5"))
 
 BACKOFF_START        = 2.0
 BACKOFF_CAP          = 30.0
 PTS_JUMP_THRESHOLD_MS = 2000.0   # scene discontinuity / loop cut
+
+
+def _service_headers() -> dict[str, str]:
+    return {"X-Service-Key": INTERNAL_SERVICE_KEY}
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +143,10 @@ class CaptureSupervisor:
         try:
             # Read cameras already synced into our backend (no cctv.corp8.cloud login)
             with httpx.Client(timeout=15.0) as client:
-                resp = client.get(f"{BACKEND_URL.rstrip('/')}/api/v1/cameras")
+                resp = client.get(
+                    f"{BACKEND_URL.rstrip('/')}/api/v1/cameras",
+                    headers=_service_headers(),
+                )
                 resp.raise_for_status()
                 items = resp.json()
             if isinstance(items, list):
@@ -167,7 +175,10 @@ class CaptureSupervisor:
     def fetch_active_sessions(self) -> set[str]:
         try:
             with httpx.Client(timeout=10.0) as client:
-                resp = client.get(f"{BACKEND_URL.rstrip('/')}/api/v1/stream/active")
+                resp = client.get(
+                    f"{BACKEND_URL.rstrip('/')}/api/v1/stream/active",
+                    headers=_service_headers(),
+                )
                 resp.raise_for_status()
                 data = resp.json()
             active: set[str] = set()
