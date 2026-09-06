@@ -15,7 +15,11 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.api.deps import get_current_active_user
+from app.api.deps import (
+    assert_operator_department,
+    get_current_active_user,
+    require_write,
+)
 from app.core.config import settings
 from app.db.models import Camera, CameraStatus, Department, User
 from app.db.session import get_db
@@ -140,6 +144,9 @@ async def cameras_geojson(
                     "heading_deg": cam.heading_deg,
                     "fov_deg": cam.fov_deg,
                     "range_m": cam.range_m,
+                    "geo_source": (cam.meta or {}).get("geo_source"),
+                    "latitude": cam.latitude,
+                    "longitude": cam.longitude,
                 },
             }
         )
@@ -238,7 +245,7 @@ async def cameras_nearby(
                 hls_url=settings.hls_url(r.get("hls_path") or r["external_id"]),
                 last_seen_at=None,
                 installed_at=None,
-                meta=None,
+                meta=r.get("meta") if isinstance(r.get("meta"), dict) else None,
                 distance_meters=float(r["distance_meters"]),
                 knn_fallback=used_knn or float(r["distance_meters"]) > radius_meters,
             )
@@ -271,7 +278,13 @@ async def get_camera(camera_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("", response_model=CameraOut, status_code=201)
-async def create_camera(payload: CameraCreate, db: AsyncSession = Depends(get_db)):
+async def create_camera(
+    payload: CameraCreate,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_current_active_user),
+):
+    u = require_write(user)
+    assert_operator_department(u, payload.department_code)
     existing = (
         await db.execute(select(Camera).where(Camera.external_id == payload.external_id))
     ).scalar_one_or_none()
@@ -306,15 +319,22 @@ async def create_camera(payload: CameraCreate, db: AsyncSession = Depends(get_db
 
 @router.patch("/{camera_id}", response_model=CameraOut)
 async def update_camera(
-    camera_id: uuid.UUID, payload: CameraUpdate, db: AsyncSession = Depends(get_db)
+    camera_id: uuid.UUID,
+    payload: CameraUpdate,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_current_active_user),
 ):
+    u = require_write(user)
     q = select(Camera).options(selectinload(Camera.department)).where(Camera.id == camera_id)
     cam = (await db.execute(q)).scalar_one_or_none()
     if not cam:
         raise HTTPException(404, "Camera not found")
+    existing_dept = cam.department.code if cam.department else None
+    assert_operator_department(u, existing_dept)
     data = payload.model_dump(exclude_unset=True)
     dept_code = data.pop("department_code", None)
     if dept_code is not None:
+        assert_operator_department(u, dept_code)
         dept = await _get_or_create_department(db, dept_code)
         cam.department_id = dept.id if dept else None
         cam.department = dept
@@ -329,15 +349,30 @@ async def update_camera(
 
 
 @router.delete("/{camera_id}", status_code=204)
-async def delete_camera(camera_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    cam = (await db.execute(select(Camera).where(Camera.id == camera_id))).scalar_one_or_none()
+async def delete_camera(
+    camera_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_current_active_user),
+):
+    u = require_write(user)
+    cam = (
+        await db.execute(
+            select(Camera).options(selectinload(Camera.department)).where(Camera.id == camera_id)
+        )
+    ).scalar_one_or_none()
     if not cam:
         raise HTTPException(404, "Camera not found")
+    assert_operator_department(u, cam.department.code if cam.department else None)
     cam.is_active = False
 
 
 @router.post("/bulk", response_model=BulkUploadResult)
-async def bulk_upload(file: UploadFile = File(...), db: AsyncSession = Depends(get_db)):
+async def bulk_upload(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    user: User | None = Depends(get_current_active_user),
+):
+    u = require_write(user)
     raw = await file.read()
     filename = (file.filename or "").lower()
     rows: list[dict[str, Any]] = []
@@ -421,6 +456,10 @@ async def bulk_upload(file: UploadFile = File(...), db: AsyncSession = Depends(g
         try:
             if not row.get("external_id") or not row.get("name"):
                 raise ValueError("external_id and name are required")
+            # OPERATOR: force / validate department scope
+            if u.role.value == "OPERATOR" and u.department_code:
+                row["department_code"] = u.department_code
+            assert_operator_department(u, row.get("department_code"))
             for key in ("latitude", "longitude", "heading_deg", "fov_deg", "range_m"):
                 if row.get(key) is not None and row[key] != "":
                     row[key] = float(row[key])

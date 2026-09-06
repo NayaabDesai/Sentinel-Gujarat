@@ -123,6 +123,11 @@ export default function NearbyPanel({
                   <div className="mt-0.5 font-mono text-[10px] text-chalk/40">
                     {c.external_id} · {c.department_code || "—"} · {fmtDist(c.distance_meters)}
                   </div>
+                  {c.meta?.geo_source === "inferred" && (
+                    <span className="mt-1 inline-block border border-saffron-500/40 bg-saffron-500/15 px-1 py-0.5 font-mono text-[8px] uppercase tracking-wider text-saffron-400">
+                      ⚠ Approx. Geo-Location (Inferred from Title)
+                    </span>
+                  )}
                 </div>
               </div>
               <div className="mt-2 flex gap-1">

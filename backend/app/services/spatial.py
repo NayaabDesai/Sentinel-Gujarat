@@ -40,6 +40,7 @@ async def find_nearby_cameras(
             c.range_m,
             c.whep_path,
             c.hls_path,
+            c.meta,
             ST_Distance(
                 c.location::geography,
                 ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)::geography
@@ -86,6 +87,7 @@ async def find_nearby_cameras(
             c.range_m,
             c.whep_path,
             c.hls_path,
+            c.meta,
             ST_Distance(
                 c.location::geography,
                 ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)::geography

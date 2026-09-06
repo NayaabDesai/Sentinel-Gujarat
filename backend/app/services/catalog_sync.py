@@ -216,9 +216,11 @@ def _extract(item: dict[str, Any]) -> dict[str, Any]:
 
     lat  = item.get("latitude")  or item.get("lat")
     lon  = item.get("longitude") or item.get("lon")
+    geo_inferred = False
     # Sandbox cameras.json has no coordinates — infer approximate Gujarat locations
     if lat is None or lon is None:
         lat, lon = _approx_coords(cam_id, name)
+        geo_inferred = True
 
     dept = item.get("department") or item.get("department_code") or item.get("dept") or "SANDBOX"
 
@@ -228,6 +230,8 @@ def _extract(item: dict[str, Any]) -> dict[str, Any]:
         "latitude", "lat", "longitude", "lon", "department", "department_code", "dept",
     }
     meta = {k: v for k, v in item.items() if k not in known}
+    if geo_inferred:
+        meta = {**(meta or {}), "geo_source": "inferred", "geo_disclaimer": "Approx. from camera title"}
 
     return {
         "external_id":      cam_id,

@@ -15,6 +15,7 @@ const ROLE_STYLE: Record<string, string> = {
 
 export default function Navbar({ tab, onTab }: Props) {
   const { user, logout } = useAuth();
+  const canWrite = user?.role === "ADMIN" || user?.role === "OPERATOR";
 
   return (
     <header className="border-b border-white/10 bg-ink-900/60 px-4 py-3 backdrop-blur md:px-6">
@@ -36,19 +37,27 @@ export default function Navbar({ tab, onTab }: Props) {
         <nav className="flex gap-0.5 border border-white/10 bg-ink-950/80 p-0.5">
           {(
             [
-              ["map", "GIS & Live"],
-              ["ingest", "Onboarding"],
-              ["analytics", "Analytics"],
+              ["map", "GIS & Live", true],
+              ["ingest", "Onboarding", canWrite],
+              ["analytics", "Analytics", true],
             ] as const
-          ).map(([id, label]) => (
+          ).map(([id, label, enabled]) => (
             <button
               key={id}
               type="button"
-              onClick={() => onTab(id)}
+              disabled={!enabled}
+              title={
+                !enabled
+                  ? "VIEWER is read-only — bulk upload disabled"
+                  : undefined
+              }
+              onClick={() => enabled && onTab(id)}
               className={`px-3 py-1.5 text-xs font-medium transition ${
                 tab === id
                   ? "bg-forest-500/20 text-forest-400"
-                  : "text-chalk/50 hover:text-chalk"
+                  : enabled
+                    ? "text-chalk/50 hover:text-chalk"
+                    : "cursor-not-allowed text-chalk/25"
               }`}
             >
               {label}

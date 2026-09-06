@@ -1,6 +1,32 @@
 # Sentinel Gujarat
 
-Unified CCTV **Central Registry & GIS Platform (Model 1)** with on-demand live video for 80,000+ cameras across Gujarat government departments.
+Unified CCTV **Central Registry & GIS Platform (Model 1)** — Police Command & Control evaluation build with PostGIS gap analysis, on-demand live video (WHEP → HLS → proxy), and department-scoped RBAC.
+
+## Architecture
+
+```
+┌─────────────┐     JWT      ┌──────────────────┐
+│ React 18 UI │─────────────▶│ FastAPI (async)  │
+│ MapLibre GL │◀─────────────│ GeoAlchemy2 API  │
+│ HLS.js/WHEP │   GeoJSON    └────────┬─────────┘
+└─────────────┘                       │
+                                      ▼
+                    ┌─────────────────────────────────┐
+                    │ PostgreSQL 16 + PostGIS 3.4     │
+                    │ Redis 7 (session / cache)       │
+                    └─────────────────────────────────┘
+                                      ▲
+                    ┌─────────────────┴───────────────┐
+                    │ OpenCV capture worker            │
+                    │ (on-demand RTSP via X-Service-Key)│
+                    └─────────────────────────────────┘
+                                      │
+                    ┌─────────────────▼───────────────┐
+                    │ Sandbox: cctv.corp8.cloud         │
+                    │ Catalog · WHEP :8889 · HLS CDN   │
+                    │ (ONE web session per IP)         │
+                    └─────────────────────────────────┘
+```
 
 ## Stack
 
@@ -10,67 +36,93 @@ Unified CCTV **Central Registry & GIS Platform (Model 1)** with on-demand live v
 | Cache / sessions | Redis 7 |
 | API | FastAPI + Async SQLAlchemy + GeoAlchemy2 |
 | Capture | OpenCV (RTSP over TCP) + PTS timing |
-| Frontend | React (Vite) + MapLibre GL + WHEP / HLS.js |
+| Frontend | React 18 (Vite) + Tailwind + MapLibre GL + WHEP / HLS.js |
 
-## Quick start
+## 60-second evaluator quickstart (`sentinel.bat`)
 
-```bash
-cd sentinel-gujarat
-cp .env.example .env
-# Set SANDBOX_HOST to the machine serving /api/ingest, WHEP :8889, HLS /live
+From the repo root on Windows:
 
-docker compose up --build
+```bat
+copy .env.example .env
+REM Edit .env: SANDBOX_* URLs and portal credentials stay server-side only
+
+cmd /c sentinel.bat build
+cmd /c sentinel.bat up
 ```
 
-- API: http://localhost:8000/docs  
-- UI: http://localhost:5173  
-- Health: http://localhost:8000/health  
+| Surface | URL |
+|---------|-----|
+| UI | http://localhost:5173 |
+| API docs | http://localhost:8000/docs |
+| Health | http://localhost:8000/health |
 
-### Local (without Docker)
+**Judge walkthrough (in-app banner):**  
+1. Sync Catalog (Admin) → 2. Locate Junction (`/` or Ctrl+K) → 3. Test Video Stream → 4. Analytics → Export Gap Report.
 
-```bash
-# DB: run PostGIS 16 somehow, then:
-cd backend && pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+## Seed credentials
 
-cd ../frontend && npm install && npm run dev
+| Email | Password | Role | Scope |
+|-------|----------|------|-------|
+| `admin@police.gujarat.gov.in` | `Sentinel@2026` | ADMIN | Full R/W, sync, bulk, cross-dept |
+| `amc.traffic@gujarat.gov.in` | `Sentinel@2026` | OPERATOR | Read all; write limited to assigned dept (`TRAFFIC` / AMC traffic scope) |
+| `viewer@police.gujarat.gov.in` | `Sentinel@2026` | VIEWER | Read-only — sync/bulk UI disabled; POST → **403** |
 
-cd ../worker && pip install -r requirements.txt
-python capture_worker.py
-```
+## Sandbox URL contracts
 
-## Sandbox contracts (do not hardcode camera URLs)
+Configure via `.env` (never expose portal password to the browser):
 
-| Contract | URL |
-|----------|-----|
-| Catalog | `GET http://<HOST>/api/ingest` |
-| WHEP | `http://<HOST>:8889/stream/<id>/whep` |
-| HLS | `http://<HOST>/live/stream/<id>/index.m3u8` |
+| Contract | Env / pattern |
+|----------|----------------|
+| Portal host | `SANDBOX_HOST` → `cctv.corp8.cloud` |
+| Catalog | Server fetches `cameras.json` during sync only |
+| WHEP | `SANDBOX_WHEP_BASE` → `http://<HOST>:8889/stream/<id>/whep` |
+| HLS CDN | `SANDBOX_HLS_BASE` → `http://<HOST>/live/stream/<id>/index.m3u8` |
+| RTSP | Host/port in env — used by worker + CLI copy |
 
-Camera IDs and RTSP URLs are discovered dynamically by `catalog_sync` and the capture worker.
+### Single-session safety (critical)
 
-## Sandbox rules implemented
+`cctv.corp8.cloud` allows **one web login session per IP**. Sentinel:
 
-1. **RTSP over TCP** — `OPENCV_FFMPEG_CAPTURE_OPTIONS=rtsp_transport;tcp` in worker + compose  
-2. **Dynamic catalog** — polls `/api/ingest` on a timer; never hardcodes stream URLs  
-3. **Monotonic PTS** — velocity from `CAP_PROP_POS_MSEC` ΔPTS only  
-4. **Backoff reconnect** — 2s → 30s cap  
-5. **Non-fatal join** — pre-IDR decode warnings logged and skipped  
-6. **Scene discontinuity** — tracker + MOG2 reset on loop/PTS jumps  
-7. **On-demand ingest** — RTSP opens only for cameras with active `/api/v1/stream` sessions  
+- Logs into the portal **only on the backend** during catalog sync or rare HLS proxy auth fallback
+- **Logs out immediately** after the fetch
+- Does **not** poll `cameras.json` from the browser
+- Does **not** put sandbox credentials in the frontend bundle
+- Sets `CATALOG_AUTO_SYNC=false` by default — sync is an explicit Admin click
 
-## Multi-modal onboarding
+If HLS CDN is cookie/CORS blocked, the UI falls through to  
+`GET /api/v1/stream/proxy/{camera_id}/index.m3u8` (JWT-authenticated).
 
-- Manual: `POST /api/v1/cameras`  
-- Bulk: `POST /api/v1/cameras/bulk` (CSV / Excel / GeoJSON) via UI  
-- Automated: sandbox sync `POST /api/v1/ingest/sync`  
+## Stream playback waterfall
+
+1. **WHEP** WebRTC (~3.5s timeout)  
+2. **Direct CDN HLS** (~4s)  
+3. **Backend HLS proxy** (Bearer token via hls.js `xhrSetup`)  
+4. Offline HUD with Retry + copy `ffplay` RTSP command  
 
 ## Key APIs
 
-- `GET /api/v1/cameras` / `GET /api/v1/cameras/geojson` / `GET /api/v1/cameras/spatial`  
-- `GET /api/v1/analytics/gaps` — PostGIS blind-spot fishnet  
-- `POST /api/v1/stream/sessions` + heartbeat — on-demand preview lifecycle  
+| Endpoint | Notes |
+|----------|-------|
+| `POST /api/v1/auth/login` | OAuth2 password → JWT |
+| `GET /api/v1/cameras` / `geojson` / `nearby` | Registry + GIS |
+| `POST /api/v1/ingest/sync` | ADMIN only |
+| `POST /api/v1/cameras/bulk` | ADMIN/OPERATOR (dept-scoped) |
+| `POST /api/v1/stream/sessions` | On-demand preview |
+| `GET /api/v1/stream/proxy/{id}/index.m3u8` | Authenticated HLS proxy |
+| `GET /api/v1/analytics/gaps` | PostGIS fishnet |
+| `GET /api/v1/analytics/export/csv` | Full metadata CSV |
+| `GET /api/v1/analytics/export/gaps-csv` | Gap report CSV |
 
-## Project layout
+## Docker / local
 
-See repository tree under `backend/`, `worker/`, and `frontend/` as scaffolded for the hackathon Model 1 foundation.
+```bash
+docker compose up --build
+```
+
+Or without Docker: run PostGIS + Redis, then `uvicorn` (backend), `npm run dev` (frontend), and `python capture_worker.py` (worker).
+
+## Out of scope (this sprint)
+
+- Simultaneous FFmpeg restreamers for all cameras  
+- YOLO / ANPR (Models 2/4)  
+- User self-registration / password reset  

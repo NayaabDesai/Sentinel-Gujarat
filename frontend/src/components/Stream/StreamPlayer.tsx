@@ -1,29 +1,48 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
+import { API_BASE, getToken } from "../../lib/api";
 
 type Props = {
+  cameraId: string | null;
+  externalId: string | null;
   whepUrl: string | null;
   hlsUrl: string | null;
+  rtspUrl?: string | null;
   className?: string;
 };
 
-type Protocol = "whep" | "hls" | "none";
-type Phase = "connecting" | "live" | "fallback" | "failed";
+type Protocol = "whep" | "hls-cdn" | "hls-proxy" | "none";
+type Phase = "connecting" | "live" | "failed";
 
 const WHEP_TIMEOUT_MS = 3500;
+const HLS_CDN_TIMEOUT_MS = 4000;
 
 /**
- * Unified tactical stream player: WHEP first, auto-failover to HLS at 3.5s.
+ * Multi-stage waterfall:
+ * 1) WHEP  2) Direct CDN HLS  3) Backend authenticated HLS proxy  4) Offline HUD
  */
-export default function StreamPlayer({ whepUrl, hlsUrl, className }: Props) {
+export default function StreamPlayer({
+  cameraId,
+  externalId,
+  whepUrl,
+  hlsUrl,
+  rtspUrl,
+  className,
+}: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const hlsRef = useRef<Hls | null>(null);
   const [phase, setPhase] = useState<Phase>("connecting");
   const [protocol, setProtocol] = useState<Protocol>("none");
-  const [latencyHint, setLatencyHint] = useState<string>("—");
+  const [latencyHint, setLatencyHint] = useState("—");
+  const [diag, setDiag] = useState<string>("");
   const [retryKey, setRetryKey] = useState(0);
+  const [copied, setCopied] = useState(false);
   const startedAt = useRef(Date.now());
+  const stageRef = useRef(0);
+
+  const proxyUrl =
+    cameraId != null ? `${API_BASE}/api/v1/stream/proxy/${cameraId}/index.m3u8` : null;
 
   const cleanup = useCallback(() => {
     pcRef.current?.close();
@@ -43,63 +62,139 @@ export default function StreamPlayer({ whepUrl, hlsUrl, className }: Props) {
     }
   }, []);
 
-  const startHls = useCallback(
-    (reason: string) => {
+  const markLive = (proto: Protocol) => {
+    const ms = Date.now() - startedAt.current;
+    setLatencyHint(proto === "whep" ? `${ms}ms` : proto === "hls-cdn" ? "CDN" : "PROXY");
+    setProtocol(proto);
+    setPhase("live");
+  };
+
+  const playHls = useCallback(
+    (url: string, proto: Protocol, onFatal: () => void) => {
       const video = videoRef.current;
-      if (!video || !hlsUrl) {
+      if (!video) {
+        onFatal();
+        return;
+      }
+      pcRef.current?.close();
+      pcRef.current = null;
+      video.srcObject = null;
+      if (hlsRef.current) {
+        hlsRef.current.destroy();
+        hlsRef.current = null;
+      }
+
+      setProtocol(proto);
+      setPhase("connecting");
+
+      const withAuth = (xhr: XMLHttpRequest) => {
+        const token = getToken();
+        if (token && url.includes("/api/v1/stream/proxy")) {
+          xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+        }
+      };
+
+      if (video.canPlayType("application/vnd.apple.mpegurl") && proto === "hls-cdn") {
+        video.src = url;
+        const t = setTimeout(() => {
+          if (video.readyState < 2) onFatal();
+        }, HLS_CDN_TIMEOUT_MS);
+        video.onloadeddata = () => {
+          clearTimeout(t);
+          video.play().catch(() => undefined);
+          markLive(proto);
+        };
+        video.onerror = () => {
+          clearTimeout(t);
+          onFatal();
+        };
+        return;
+      }
+
+      if (!Hls.isSupported()) {
+        onFatal();
+        return;
+      }
+
+      const hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: true,
+        xhrSetup: (xhr) => withAuth(xhr),
+      });
+      hlsRef.current = hls;
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          onFatal();
+        }
+      }, HLS_CDN_TIMEOUT_MS);
+
+      hls.loadSource(url);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        video.play().catch(() => undefined);
+        markLive(proto);
+      });
+      hls.on(Hls.Events.ERROR, (_e, data) => {
+        if (data.fatal && !settled) {
+          settled = true;
+          clearTimeout(timer);
+          onFatal();
+        }
+      });
+    },
+    []
+  );
+
+  const startProxy = useCallback(
+    (reason: string) => {
+      setDiag(reason);
+      if (!proxyUrl) {
         setPhase("failed");
         setProtocol("none");
         return;
       }
-      // Tear down WHEP before HLS
-      pcRef.current?.close();
-      pcRef.current = null;
-      video.srcObject = null;
+      playHls(proxyUrl, "hls-proxy", () => {
+        setDiag(`${reason} → proxy failed`);
+        setPhase("failed");
+        setProtocol("none");
+      });
+    },
+    [playHls, proxyUrl]
+  );
 
-      setPhase("fallback");
-      setProtocol("hls");
-      setLatencyHint("~3s");
-      console.info("[StreamPlayer] HLS fallback:", reason);
-
-      if (video.canPlayType("application/vnd.apple.mpegurl")) {
-        video.src = hlsUrl;
-        video.play().catch(() => undefined);
-        setPhase("live");
+  const startCdnHls = useCallback(
+    (reason: string) => {
+      setDiag(reason);
+      if (!hlsUrl) {
+        startProxy(`${reason} → no CDN URL`);
         return;
       }
-      if (Hls.isSupported()) {
-        const hls = new Hls({ enableWorker: true, lowLatencyMode: true });
-        hlsRef.current = hls;
-        hls.loadSource(hlsUrl);
-        hls.attachMedia(video);
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          video.play().catch(() => undefined);
-          setPhase("live");
-        });
-        hls.on(Hls.Events.ERROR, (_e, data) => {
-          if (data.fatal) setPhase("failed");
-        });
-      } else {
-        setPhase("failed");
-      }
+      playHls(hlsUrl, "hls-cdn", () => startProxy(`${reason} → CDN HLS failed`));
     },
-    [hlsUrl]
+    [hlsUrl, playHls, startProxy]
   );
 
   useEffect(() => {
     let cancelled = false;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     startedAt.current = Date.now();
+    stageRef.current = 0;
     setPhase("connecting");
     setProtocol("none");
     setLatencyHint("—");
+    setDiag("");
     cleanup();
 
     const video = videoRef.current;
     if (!video) return;
 
     if (!whepUrl) {
-      startHls("no WHEP URL");
+      startCdnHls("no WHEP URL");
       return () => {
         cancelled = true;
         cleanup();
@@ -122,22 +217,19 @@ export default function StreamPlayer({ whepUrl, hlsUrl, className }: Props) {
       if (timeoutId) clearTimeout(timeoutId);
       video.srcObject = ev.streams[0];
       video.play().catch(() => undefined);
-      const ms = Date.now() - startedAt.current;
-      setLatencyHint(`${ms}ms`);
-      setProtocol("whep");
-      setPhase("live");
+      markLive("whep");
     };
 
     pc.onconnectionstatechange = () => {
       if (cancelled || whepLive) return;
       if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
-        startHls(`WebRTC ${pc.connectionState}`);
+        startCdnHls(`WebRTC ${pc.connectionState}`);
       }
     };
 
     timeoutId = setTimeout(() => {
       if (cancelled || whepLive) return;
-      startHls("WHEP timeout 3.5s");
+      startCdnHls("WHEP timeout 3.5s");
     }, WHEP_TIMEOUT_MS);
 
     (async () => {
@@ -168,7 +260,7 @@ export default function StreamPlayer({ whepUrl, hlsUrl, className }: Props) {
         await pc.setRemoteDescription({ type: "answer", sdp: answer });
       } catch (e) {
         if (cancelled || whepLive) return;
-        startHls(e instanceof Error ? e.message : "WHEP error");
+        startCdnHls(e instanceof Error ? e.message : "WHEP error");
       }
     })();
 
@@ -177,49 +269,84 @@ export default function StreamPlayer({ whepUrl, hlsUrl, className }: Props) {
       if (timeoutId) clearTimeout(timeoutId);
       cleanup();
     };
-  }, [whepUrl, hlsUrl, retryKey, cleanup, startHls]);
+  }, [whepUrl, hlsUrl, cameraId, retryKey, cleanup, startCdnHls]);
 
   const pill =
     protocol === "whep" && phase === "live"
-      ? `LIVE · WHEP ${latencyHint}`
-      : protocol === "hls" && (phase === "live" || phase === "fallback")
-        ? `FALLBACK · HLS ${latencyHint}`
-        : phase === "connecting"
-          ? "CONNECTING…"
-          : "OFFLINE";
+      ? `WHEP ${latencyHint}`
+      : protocol === "hls-cdn" && phase === "live"
+        ? `HLS CDN`
+        : protocol === "hls-proxy" && phase === "live"
+          ? `HLS PROXY`
+          : phase === "connecting"
+            ? "HANDSHAKE…"
+            : "OFFLINE";
 
   const pillClass =
     protocol === "whep" && phase === "live"
       ? "border-forest-500/40 bg-forest-500/20 text-forest-400"
-      : protocol === "hls"
+      : protocol === "hls-cdn" && phase === "live"
         ? "border-saffron-500/40 bg-saffron-500/15 text-saffron-400"
-        : phase === "failed"
-          ? "border-rose-500/40 bg-rose-500/15 text-rose-400"
-          : "border-white/10 bg-black/40 text-chalk/60";
+        : protocol === "hls-proxy" && phase === "live"
+          ? "border-saffron-500/50 bg-saffron-500/20 text-saffron-400"
+          : phase === "failed"
+            ? "border-rose-500/40 bg-rose-500/15 text-rose-400"
+            : "border-white/10 bg-black/40 text-chalk/60";
+
+  const ffplayCmd = rtspUrl
+    ? `ffplay -rtsp_transport tcp "${rtspUrl}"`
+    : externalId
+      ? `# No RTSP URL — external_id=${externalId}`
+      : "# No RTSP";
+
+  const copyRtsp = async () => {
+    try {
+      await navigator.clipboard.writeText(ffplayCmd);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* ignore */
+    }
+  };
 
   return (
     <div className={`relative overflow-hidden bg-ink-950 ${className || ""}`}>
       <video ref={videoRef} autoPlay playsInline muted className="h-full w-full object-contain" />
 
-      {(phase === "connecting" || phase === "fallback") && phase !== "live" && (
+      {phase === "connecting" && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-ink-950/75">
           <div className="h-8 w-8 animate-pulse border border-forest-500/40 border-t-forest-400" />
           <span className="font-mono text-[10px] uppercase tracking-wider text-chalk/50">
-            {phase === "fallback" ? "Switching to HLS…" : "Establishing feed…"}
+            Establishing feed…
           </span>
+          {diag && <span className="max-w-[90%] truncate font-mono text-[9px] text-chalk/35">{diag}</span>}
         </div>
       )}
 
       {phase === "failed" && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-ink-950/85">
-          <span className="font-mono text-xs text-rose-400">Feed unavailable</span>
-          <button
-            type="button"
-            onClick={() => setRetryKey((k) => k + 1)}
-            className="border border-white/15 px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-chalk/70 hover:border-forest-500/40 hover:text-forest-400"
-          >
-            Retry
-          </button>
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-ink-950/90 px-3 text-center">
+          <span className="font-mono text-[10px] uppercase tracking-wider text-rose-400">
+            Feed offline / RTSP direct only
+          </span>
+          <p className="font-mono text-[9px] text-chalk/45">
+            {externalId || "camera"} · ping {latencyHint} · {diag || "all stages failed"}
+          </p>
+          <div className="mt-1 flex flex-wrap justify-center gap-2">
+            <button
+              type="button"
+              onClick={() => setRetryKey((k) => k + 1)}
+              className="border border-forest-500/40 px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-forest-400 hover:bg-forest-500/15"
+            >
+              Retry handshake
+            </button>
+            <button
+              type="button"
+              onClick={copyRtsp}
+              className="border border-white/15 px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-chalk/60 hover:text-chalk"
+            >
+              {copied ? "Copied" : "Copy ffplay RTSP"}
+            </button>
+          </div>
         </div>
       )}
 
@@ -228,6 +355,16 @@ export default function StreamPlayer({ whepUrl, hlsUrl, className }: Props) {
       >
         {pill}
       </span>
+      {phase === "live" && (
+        <button
+          type="button"
+          onClick={copyRtsp}
+          className="absolute bottom-2 right-2 border border-white/10 bg-black/50 px-1.5 py-0.5 font-mono text-[8px] text-chalk/50 hover:text-chalk"
+          title={ffplayCmd}
+        >
+          {copied ? "COPIED" : "RTSP CLI"}
+        </button>
+      )}
     </div>
   );
 }

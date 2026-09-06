@@ -1,7 +1,11 @@
 import { useState } from "react";
-import { api } from "../../lib/api";
+import { api, ApiError } from "../../lib/api";
 
-export default function BulkUpload() {
+type Props = {
+  canWrite?: boolean;
+};
+
+export default function BulkUpload({ canWrite = true }: Props) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{
     total: number;
@@ -12,7 +16,7 @@ export default function BulkUpload() {
   const [error, setError] = useState<string | null>(null);
 
   const onFile = async (file: File | null) => {
-    if (!file) return;
+    if (!file || !canWrite) return;
     setBusy(true);
     setError(null);
     setResult(null);
@@ -20,7 +24,11 @@ export default function BulkUpload() {
       const res = await api.bulkUpload(file);
       setResult(res);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (e instanceof ApiError && e.status === 403) {
+        setError("403 Forbidden — VIEWER cannot bulk upload");
+      } else {
+        setError(e instanceof Error ? e.message : String(e));
+      }
     } finally {
       setBusy(false);
     }
@@ -35,14 +43,32 @@ export default function BulkUpload() {
         </p>
       </div>
 
-      <label className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-white/20 bg-ink-900/60 px-6 py-10 transition hover:border-saffron-400/50 hover:bg-ink-800/40">
-        <span className="font-medium text-chalk">{busy ? "Uploading…" : "Drop file or click to browse"}</span>
+      {!canWrite && (
+        <p
+          className="border border-saffron-500/30 bg-saffron-500/10 px-3 py-2 font-mono text-[11px] text-saffron-400"
+          title="VIEWER accounts are read-only"
+        >
+          Bulk upload disabled — VIEWER role is read-only (POST returns 403).
+        </p>
+      )}
+
+      <label
+        title={canWrite ? undefined : "VIEWER cannot upload — ADMIN/OPERATOR only"}
+        className={`flex flex-col items-center justify-center gap-2 border border-dashed border-white/20 bg-ink-900/60 px-6 py-10 transition ${
+          canWrite
+            ? "cursor-pointer hover:border-saffron-400/50 hover:bg-ink-800/40"
+            : "cursor-not-allowed opacity-40"
+        }`}
+      >
+        <span className="font-medium text-chalk">
+          {busy ? "Uploading…" : canWrite ? "Drop file or click to browse" : "Upload locked"}
+        </span>
         <span className="font-mono text-xs text-chalk/45">.csv · .xlsx · .geojson</span>
         <input
           type="file"
           accept=".csv,.txt,.xlsx,.xls,.geojson,.json"
           className="hidden"
-          disabled={busy}
+          disabled={busy || !canWrite}
           onChange={(e) => onFile(e.target.files?.[0] || null)}
         />
       </label>

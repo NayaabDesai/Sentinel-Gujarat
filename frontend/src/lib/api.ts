@@ -37,7 +37,9 @@ export type Camera = {
   is_active: boolean;
   whep_url: string | null;
   hls_url: string | null;
+  rtsp_url?: string | null;
   last_seen_at: string | null;
+  meta?: { geo_source?: string; geo_disclaimer?: string; [k: string]: unknown } | null;
   distance_meters?: number;
   knn_fallback?: boolean;
 };
@@ -151,6 +153,27 @@ export const api = {
     json(`/api/v1/stream/sessions/${session_id}?client_id=${encodeURIComponent(client_id)}`, {
       method: "DELETE",
     }),
+  /** Authenticated blob download for Model 1 CSV exports */
+  downloadExport: async (path: string, fallbackName: string) => {
+    const headers = new Headers();
+    const token = getToken();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    const res = await fetch(`${API_BASE}${path}`, { headers });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new ApiError(res.status, text || res.statusText);
+    }
+    const blob = await res.blob();
+    const cd = res.headers.get("Content-Disposition") || "";
+    const match = /filename="?([^"]+)"?/i.exec(cd);
+    const name = match?.[1] || fallbackName;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    a.click();
+    URL.revokeObjectURL(url);
+  },
 };
 
 declare global {

@@ -20,6 +20,7 @@ export default function GapReport() {
   const [uptime, setUptime] = useState<Record<string, unknown> | null>(null);
   const [aging, setAging] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [exportMsg, setExportMsg] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -33,6 +34,21 @@ export default function GapReport() {
       }
     })();
   }, []);
+
+  const exportCsv = async (kind: "cameras" | "gaps") => {
+    setExportMsg(null);
+    try {
+      if (kind === "cameras") {
+        await api.downloadExport("/api/v1/analytics/export/csv", "sentinel_cameras.csv");
+        setExportMsg("Downloaded camera metadata CSV");
+      } else {
+        await api.downloadExport("/api/v1/analytics/export/gaps-csv", "sentinel_gap_report.csv");
+        setExportMsg("Downloaded gap analysis report");
+      }
+    } catch (e) {
+      setExportMsg(e instanceof Error ? e.message : String(e));
+    }
+  };
 
   const uptimePie = uptime
     ? [
@@ -52,12 +68,33 @@ export default function GapReport() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="font-display text-xl text-chalk">Coverage & health</h2>
-        <p className="mt-1 text-sm text-chalk/60">
-          PostGIS blind-spot fishnet, fleet uptime, and aging infrastructure.
-        </p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="font-display text-xl text-chalk">Coverage & health</h2>
+          <p className="mt-1 text-sm text-chalk/60">
+            PostGIS blind-spot fishnet, fleet uptime, and aging infrastructure.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => exportCsv("cameras")}
+            className="border border-white/15 px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-chalk/70 hover:border-forest-500/40 hover:text-forest-400"
+          >
+            Export metadata CSV
+          </button>
+          <button
+            type="button"
+            onClick={() => exportCsv("gaps")}
+            className="border border-saffron-500/40 bg-saffron-500/10 px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-saffron-400 hover:bg-saffron-500/20"
+          >
+            Export Gap Report
+          </button>
+        </div>
       </div>
+      {exportMsg && (
+        <p className="font-mono text-[10px] text-chalk/45">{exportMsg}</p>
+      )}
 
       {error && (
         <div className="rounded-md border border-red-500/40 bg-red-950/40 px-3 py-2 text-sm text-red-200">
