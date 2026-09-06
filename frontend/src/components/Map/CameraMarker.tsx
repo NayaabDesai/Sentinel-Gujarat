@@ -1,3 +1,5 @@
+import { forwardRef } from "react";
+
 type Props = {
   name: string;
   status: string;
@@ -13,22 +15,32 @@ const statusColor: Record<string, string> = {
   unknown: "bg-slate-400",
 };
 
-export default function CameraMarker({ name, status, department, selected, onClick }: Props) {
+const CameraMarker = forwardRef<HTMLButtonElement, Props>(function CameraMarker(
+  { name, status, department, selected, onClick },
+  ref
+) {
   return (
     <button
+      ref={ref}
       type="button"
       onClick={onClick}
-      className={`flex w-full items-start gap-3 rounded-md px-3 py-2 text-left transition ${
-        selected ? "bg-white/10 ring-1 ring-saffron-400/60" : "hover:bg-white/5"
+      className={`flex w-full items-start gap-3 border-l-4 px-3 py-2.5 text-left transition ${
+        selected
+          ? "border-red-500 bg-white/[0.08]"
+          : "border-transparent hover:bg-white/[0.04]"
       }`}
     >
-      <span className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${statusColor[status] || statusColor.unknown}`} />
+      <span
+        className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${statusColor[status] || statusColor.unknown}`}
+      />
       <span className="min-w-0">
-        <span className="block truncate font-medium text-chalk">{name}</span>
-        <span className="block truncate text-xs text-chalk/55">
+        <span className="block truncate text-sm font-medium text-chalk">{name}</span>
+        <span className="block truncate font-mono text-[10px] text-chalk/50">
           {department || "Unassigned"} · {status}
         </span>
       </span>
     </button>
   );
-}
+});
+
+export default CameraMarker;

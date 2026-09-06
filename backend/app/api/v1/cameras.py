@@ -206,8 +206,8 @@ async def cameras_nearby(
     _user: User | None = Depends(get_current_active_user),
 ):
     """
-    Tap-to-discover: cameras near a map click, sorted by distance_meters.
-    Falls back to KNN nearest neighbours if the radius is empty.
+    Tap-to-discover: cameras within radius_meters of a map click, sorted by distance.
+    Returns an empty list when nothing is in range (no distant KNN fill-in).
     """
     rows = await find_nearby_cameras(
         db,
@@ -216,10 +216,6 @@ async def cameras_nearby(
         radius_meters=radius_meters,
         limit=limit,
         department=department,
-    )
-    # Detect KNN fallback: any row beyond radius means we fell through
-    used_knn = bool(rows) and all(
-        float(r["distance_meters"]) > radius_meters for r in rows
     )
     out: list[CameraNearbyOut] = []
     for r in rows:
@@ -247,7 +243,7 @@ async def cameras_nearby(
                 installed_at=None,
                 meta=r.get("meta") if isinstance(r.get("meta"), dict) else None,
                 distance_meters=float(r["distance_meters"]),
-                knn_fallback=used_knn or float(r["distance_meters"]) > radius_meters,
+                knn_fallback=False,
             )
         )
     return out

@@ -18,7 +18,7 @@ export default function Navbar({ tab, onTab }: Props) {
   const canWrite = user?.role === "ADMIN" || user?.role === "OPERATOR";
 
   return (
-    <header className="border-b border-white/10 bg-ink-900/60 px-4 py-3 backdrop-blur md:px-6">
+    <header className="shrink-0 border-b border-white/10 bg-ink-900/60 px-4 py-2 backdrop-blur md:px-6">
       <div className="mx-auto flex max-w-[1800px] flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <div className="flex h-9 w-9 items-center justify-center border border-forest-500/40 bg-forest-500/10 font-mono text-xs font-bold text-forest-400">

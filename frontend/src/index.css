@@ -16,6 +16,7 @@ body,
 #root {
   height: 100%;
   margin: 0;
+  overflow: hidden;
 }
 
 body {
@@ -40,6 +41,10 @@ body {
 
 .maplibregl-popup-tip {
   border-top-color: #151c2c !important;
+}
+
+.sentinel-pin-popup .maplibregl-popup-content {
+  pointer-events: none;
 }
 
 .maplibregl-ctrl-group {

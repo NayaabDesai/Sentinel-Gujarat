@@ -3,7 +3,7 @@ import GisMap from "./components/Map/GisMap";
 import NearbyPanel from "./components/Map/NearbyPanel";
 import CameraSearch from "./components/Map/CameraSearch";
 import CameraMarker from "./components/Map/CameraMarker";
-import StreamPlayer from "./components/Stream/StreamPlayer";
+import StreamPreviewModal from "./components/Stream/StreamPreviewModal";
 import BulkUpload from "./components/Ingestion/BulkUpload";
 import GapReport from "./components/Dashboard/GapReport";
 import Navbar from "./components/Layout/Navbar";
@@ -19,15 +19,6 @@ const CLIENT_ID =
     ? `ui-${crypto.randomUUID()}`
     : `ui-${Math.random().toString(36).slice(2)}`;
 
-function ApproxGeoBadge({ cam }: { cam: Camera | null }) {
-  if (!cam?.meta || cam.meta.geo_source !== "inferred") return null;
-  return (
-    <span className="mt-1 inline-flex border border-saffron-500/40 bg-saffron-500/15 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider text-saffron-400">
-      ⚠ Approx. Geo-Location (Inferred from Title)
-    </span>
-  );
-}
-
 function Dashboard() {
   const { user, logout } = useAuth();
   const [tab, setTab] = useState<Tab>("map");
@@ -36,6 +27,8 @@ function Dashboard() {
   const [department, setDepartment] = useState<string>("");
   const [showFov, setShowFov] = useState(true);
   const [selected, setSelected] = useState<Camera | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewStarting, setPreviewStarting] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
@@ -44,8 +37,8 @@ function Dashboard() {
   const [nearby, setNearby] = useState<Camera[]>([]);
   const [nearbyLoading, setNearbyLoading] = useState(false);
   const [knnFallback, setKnnFallback] = useState(false);
-  const [drawerOpen, setDrawerOpen] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cameraRowRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
 
   const canSync = user?.role === "ADMIN";
   const canWrite = user?.role === "ADMIN" || user?.role === "OPERATOR";
@@ -86,7 +79,8 @@ function Dashboard() {
           id: cameraId,
           external_id: String(props.external_id || ""),
           name: String(props.name || "Camera"),
-          department_code: (props.department as string) || (props.department_code as string) || null,
+          department_code:
+            (props.department as string) || (props.department_code as string) || null,
           latitude: Number.isFinite(lat as number) ? (lat as number) : null,
           longitude: Number.isFinite(lon as number) ? (lon as number) : null,
           heading_deg: null,
@@ -104,6 +98,8 @@ function Dashboard() {
         } satisfies Camera);
 
       setSelected(full);
+      setPreviewOpen(true);
+      setPreviewStarting(true);
       setTab("map");
 
       if (
@@ -133,10 +129,21 @@ function Dashboard() {
         });
       } catch (e) {
         console.error(e);
+      } finally {
+        setPreviewStarting(false);
       }
     },
     [cameras, sessionId]
   );
+
+  const closePreview = useCallback(async () => {
+    setPreviewOpen(false);
+    setPreviewStarting(false);
+    if (sessionId) {
+      await api.endSession(sessionId, CLIENT_ID).catch(() => undefined);
+      setSessionId(null);
+    }
+  }, [sessionId]);
 
   const fetchNearby = useCallback(
     async (lat: number, lon: number, radius: number) => {
@@ -144,10 +151,7 @@ function Dashboard() {
       try {
         const rows = await api.nearby(lat, lon, radius, 12, department || undefined);
         setNearby(rows);
-        setKnnFallback(
-          rows.some((r) => r.knn_fallback) ||
-            rows.every((r) => (r.distance_meters || 0) > radius)
-        );
+        setKnnFallback(false);
       } catch (e) {
         console.error(e);
         setNearby([]);
@@ -161,7 +165,6 @@ function Dashboard() {
   const onMapTap = useCallback(
     (lat: number, lon: number) => {
       setRadar({ lat, lon });
-      setDrawerOpen(true);
       if (debounceRef.current) clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(() => {
         fetchNearby(lat, lon, radiusMeters);
@@ -185,6 +188,13 @@ function Dashboard() {
     }, 20_000);
     return () => clearInterval(t);
   }, [sessionId]);
+
+  useEffect(() => {
+    if (!selected?.id) return;
+    const el = cameraRowRefs.current.get(selected.id);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [selected?.id]);
 
   useEffect(() => {
     return () => {
@@ -231,81 +241,18 @@ function Dashboard() {
   };
 
   return (
-    <div className="flex min-h-full flex-col">
+    <div className="flex h-dvh max-h-dvh flex-col overflow-hidden">
       <Navbar tab={tab} onTab={setTab} />
 
-      <main className="mx-auto flex w-full max-w-[1800px] flex-1 flex-col gap-3 p-3 md:p-5">
-        <JudgeWalkthrough />
+      <main className="mx-auto flex min-h-0 w-full max-w-[1800px] flex-1 flex-col gap-2 overflow-hidden p-2 md:gap-2 md:p-3">
+        <div className="shrink-0">
+          <JudgeWalkthrough />
+        </div>
 
         {tab === "map" && (
-          <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[260px_1fr_340px]">
-            <aside className="flex max-h-[70vh] flex-col border border-white/10 bg-ink-900/50 lg:max-h-none">
-              <div className="space-y-3 border-b border-white/10 p-3">
-                <label className="block font-mono text-[10px] uppercase tracking-wider text-chalk/45">
-                  Department
-                  <select
-                    className="mt-1 w-full border border-white/10 bg-ink-950 px-2 py-1.5 text-sm text-chalk"
-                    value={department}
-                    onChange={(e) => setDepartment(e.target.value)}
-                  >
-                    <option value="">All departments</option>
-                    {departments.map((d) => (
-                      <option key={d.code} value={d.code}>
-                        {d.name} ({d.camera_count})
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="flex items-center gap-2 text-sm text-chalk/70">
-                  <input
-                    type="checkbox"
-                    checked={showFov}
-                    onChange={(e) => setShowFov(e.target.checked)}
-                  />
-                  FOV cones
-                </label>
-                <button
-                  type="button"
-                  onClick={syncCatalog}
-                  disabled={!canSync}
-                  title={
-                    canSync
-                      ? "Pull cameras.json once via server session (ADMIN)"
-                      : "ADMIN only — VIEWER/OPERATOR cannot sync sandbox catalog"
-                  }
-                  className="w-full border border-forest-500/40 bg-forest-500/15 px-2 py-1.5 text-sm text-forest-400 hover:bg-forest-500/25 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  Sync sandbox catalog
-                </button>
-                {syncMsg && (
-                  <p className="font-mono text-[10px] text-chalk/45">{syncMsg}</p>
-                )}
-                <p className="font-mono text-[9px] text-chalk/35">
-                  Tip: / or Ctrl+K to search · tap map for nearby scan
-                </p>
-              </div>
-              <div className="flex-1 space-y-0.5 overflow-y-auto p-2">
-                {filtered.map((c) => (
-                  <CameraMarker
-                    key={c.id}
-                    name={c.name}
-                    status={c.status}
-                    department={c.department_code}
-                    selected={selected?.id === c.id}
-                    onClick={() =>
-                      onSelectCamera(c.id, c as unknown as Record<string, unknown>)
-                    }
-                  />
-                ))}
-                {filtered.length === 0 && (
-                  <p className="p-3 text-sm text-chalk/45">
-                    No cameras yet. Sync ingest or upload a CSV.
-                  </p>
-                )}
-              </div>
-            </aside>
-
-            <section className="relative min-h-[420px] lg:min-h-[640px]">
+          <div className="grid min-h-0 flex-1 grid-rows-[minmax(220px,1fr)_minmax(0,22vh)_minmax(0,22vh)] gap-2 lg:grid-cols-[240px_minmax(0,1fr)_300px] lg:grid-rows-1">
+            {/* Map is first / largest so it is immediately usable */}
+            <section className="relative order-1 min-h-0 lg:order-2">
               <div className="absolute left-3 right-14 top-3 z-30">
                 <CameraSearch
                   cameras={filtered}
@@ -323,17 +270,88 @@ function Dashboard() {
                 onSelectCamera={onSelectCamera}
                 onMapTap={onMapTap}
               />
+            </section>
+
+            <aside className="order-2 flex min-h-0 flex-col overflow-hidden border border-white/10 bg-ink-900/50 lg:order-1">
+              <div className="shrink-0 space-y-2 border-b border-white/10 p-2.5">
+                <label className="block font-mono text-[10px] uppercase tracking-wider text-chalk/45">
+                  Department
+                  <select
+                    className="mt-1 w-full border border-white/10 bg-ink-950 px-2 py-1.5 text-sm text-chalk"
+                    value={department}
+                    onChange={(e) => setDepartment(e.target.value)}
+                  >
+                    <option value="">All departments</option>
+                    {departments.map((d) => (
+                      <option key={d.code} value={d.code}>
+                        {d.name} ({d.camera_count})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="flex flex-wrap items-center gap-3">
+                  <label className="flex items-center gap-2 text-sm text-chalk/70">
+                    <input
+                      type="checkbox"
+                      checked={showFov}
+                      onChange={(e) => setShowFov(e.target.checked)}
+                    />
+                    FOV
+                  </label>
+                  <button
+                    type="button"
+                    onClick={syncCatalog}
+                    disabled={!canSync}
+                    title={
+                      canSync
+                        ? "Pull cameras.json once via server session (ADMIN)"
+                        : "ADMIN only"
+                    }
+                    className="border border-forest-500/40 bg-forest-500/15 px-2 py-1 text-xs text-forest-400 hover:bg-forest-500/25 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Sync catalog
+                  </button>
+                </div>
+                {syncMsg && (
+                  <p className="font-mono text-[10px] text-chalk/45">{syncMsg}</p>
+                )}
+              </div>
+              <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto p-2">
+                {filtered.map((c) => (
+                  <CameraMarker
+                    key={c.id}
+                    ref={(el) => {
+                      if (el) cameraRowRefs.current.set(c.id, el);
+                      else cameraRowRefs.current.delete(c.id);
+                    }}
+                    name={c.name}
+                    status={c.status}
+                    department={c.department_code}
+                    selected={selected?.id === c.id}
+                    onClick={() =>
+                      onSelectCamera(c.id, c as unknown as Record<string, unknown>)
+                    }
+                  />
+                ))}
+                {filtered.length === 0 && (
+                  <p className="p-3 text-sm text-chalk/45">No cameras yet. Sync catalog.</p>
+                )}
+              </div>
+            </aside>
+
+            <aside className="order-3 flex min-h-0 flex-col overflow-hidden border border-white/10 bg-ink-900/50 p-2.5 lg:order-3">
               <NearbyPanel
-                open={drawerOpen}
+                active={radar != null}
                 lat={radar?.lat ?? null}
                 lon={radar?.lon ?? null}
                 radiusMeters={radiusMeters}
                 loading={nearbyLoading}
                 cameras={nearby}
                 knnFallback={knnFallback}
-                onClose={() => {
-                  setDrawerOpen(false);
+                onClear={() => {
                   setRadar(null);
+                  setNearby([]);
+                  setKnnFallback(false);
                 }}
                 onStream={(cam) =>
                   onSelectCamera(cam.id, cam as unknown as Record<string, unknown>)
@@ -348,64 +366,29 @@ function Dashboard() {
                 onFovTrace={onFovTrace}
                 onRadiusChange={setRadiusMeters}
               />
-            </section>
-
-            <aside className="flex flex-col gap-3 border border-white/10 bg-ink-900/50 p-3">
-              <div className="flex items-center justify-between">
-                <h2 className="font-mono text-[11px] uppercase tracking-wider text-chalk/55">
-                  Live preview
-                </h2>
-                {selected && (
-                  <span className="font-mono text-[9px] text-forest-400">SESSION</span>
-                )}
-              </div>
-              {!selected ? (
-                <p className="text-sm text-chalk/45">
-                  Select a camera or tap the map for a sector scan.
-                </p>
-              ) : (
-                <>
-                  <div>
-                    <div className="font-medium text-chalk">{selected.name}</div>
-                    <div className="font-mono text-[10px] text-chalk/40">
-                      {selected.external_id}
-                      {selected.latitude != null && selected.longitude != null && (
-                        <>
-                          {" "}
-                          · {selected.latitude.toFixed(4)}, {selected.longitude.toFixed(4)}
-                        </>
-                      )}
-                    </div>
-                    <ApproxGeoBadge cam={selected} />
-                  </div>
-                  <div className="aspect-video overflow-hidden border border-white/10">
-                    <StreamPlayer
-                      cameraId={selected.id}
-                      externalId={selected.external_id}
-                      whepUrl={selected.whep_url}
-                      hlsUrl={selected.hls_url}
-                      rtspUrl={selected.rtsp_url}
-                      className="h-full w-full"
-                    />
-                  </div>
-                  <p className="font-mono text-[9px] leading-relaxed text-chalk/35">
-                    Waterfall: WHEP → HLS → proxy → on-demand MJPEG (RTSP). Close the Corp8
-                    portal tab first — one web session per IP.
-                  </p>
-                </>
-              )}
             </aside>
           </div>
         )}
 
+        <StreamPreviewModal
+          open={previewOpen}
+          camera={selected}
+          starting={previewStarting}
+          onClose={() => {
+            void closePreview();
+          }}
+        />
+
         {tab === "ingest" && (
-          <div className="mx-auto w-full max-w-2xl border border-white/10 bg-ink-900/50 p-6">
-            <BulkUpload canWrite={canWrite} />
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <div className="mx-auto w-full max-w-2xl border border-white/10 bg-ink-900/50 p-6">
+              <BulkUpload canWrite={canWrite} />
+            </div>
           </div>
         )}
 
         {tab === "analytics" && (
-          <div className="border border-white/10 bg-ink-900/50 p-6">
+          <div className="min-h-0 flex-1 overflow-y-auto border border-white/10 bg-ink-900/50 p-6">
             <GapReport />
           </div>
         )}
@@ -419,7 +402,7 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="flex min-h-full items-center justify-center font-mono text-xs text-chalk/40">
+      <div className="flex h-dvh items-center justify-center font-mono text-xs text-chalk/40">
         Initialising command center…
       </div>
     );

@@ -1,363 +1,90 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import Hls from "hls.js";
 import { API_BASE, getToken } from "../../lib/api";
 
 type Props = {
   cameraId: string | null;
   externalId: string | null;
-  whepUrl: string | null;
-  hlsUrl: string | null;
+  whepUrl?: string | null;
+  hlsUrl?: string | null;
   rtspUrl?: string | null;
   className?: string;
 };
 
-type Protocol = "whep" | "hls-cdn" | "hls-proxy" | "mjpeg" | "none";
+type Protocol = "mjpeg" | "none";
 type Phase = "connecting" | "live" | "failed";
 
-const WHEP_TIMEOUT_MS = 3500;
-const HLS_CDN_TIMEOUT_MS = 4000;
-const MJPEG_TIMEOUT_MS = 8000;
+const MJPEG_ASSUME_LIVE_MS = 1500;
+const MJPEG_TIMEOUT_MS = 30000;
 
 /**
- * Waterfall:
- * 1) WHEP via backend signaling proxy
- * 2) Direct CDN HLS
- * 3) Backend HLS proxy
- * 4) On-demand RTSP→MJPEG relay (reliable path when Corp8 blocks browser HLS)
- * 5) Offline HUD
+ * On-demand preview: RTSP → MJPEG via backend (reliable on this sandbox).
+ * WHEP/HLS are blocked for most client networks / Corp8 browser rules.
  */
 export default function StreamPlayer({
   cameraId,
   externalId,
-  whepUrl,
-  hlsUrl,
   rtspUrl,
   className,
 }: Props) {
-  const videoRef = useRef<HTMLVideoElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
-  const pcRef = useRef<RTCPeerConnection | null>(null);
-  const hlsRef = useRef<Hls | null>(null);
+  const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const [phase, setPhase] = useState<Phase>("connecting");
   const [protocol, setProtocol] = useState<Protocol>("none");
-  const [latencyHint, setLatencyHint] = useState("—");
-  const [diag, setDiag] = useState<string>("");
+  const [diag, setDiag] = useState("");
   const [retryKey, setRetryKey] = useState(0);
   const [copied, setCopied] = useState(false);
   const [mjpegSrc, setMjpegSrc] = useState<string | null>(null);
-  const startedAt = useRef(Date.now());
 
-  const proxyUrl =
-    cameraId != null ? `${API_BASE}/api/v1/stream/proxy/${cameraId}/index.m3u8` : null;
-  const whepProxyUrl =
-    cameraId != null ? `${API_BASE}/api/v1/stream/whep/${cameraId}` : null;
-
-  const cleanup = useCallback(() => {
-    pcRef.current?.close();
-    pcRef.current = null;
-    if (hlsRef.current) {
-      hlsRef.current.destroy();
-      hlsRef.current = null;
-    }
-    setMjpegSrc(null);
-    const video = videoRef.current;
-    if (video) {
-      if (video.srcObject) {
-        (video.srcObject as MediaStream).getTracks().forEach((t) => t.stop());
-        video.srcObject = null;
-      }
-      video.removeAttribute("src");
-      video.load();
-    }
-  }, []);
-
-  const markLive = (proto: Protocol) => {
-    const ms = Date.now() - startedAt.current;
-    setLatencyHint(
-      proto === "whep"
-        ? `${ms}ms`
-        : proto === "hls-cdn"
-          ? "CDN"
-          : proto === "hls-proxy"
-            ? "PROXY"
-            : "RTSP"
-    );
-    setProtocol(proto);
-    setPhase("live");
+  const clearTimers = () => {
+    timersRef.current.forEach(clearTimeout);
+    timersRef.current = [];
   };
 
-  const startMjpeg = useCallback(
-    (reason: string) => {
-      setDiag(reason);
-      if (!cameraId) {
-        setPhase("failed");
-        setProtocol("none");
-        return;
-      }
-      const token = getToken();
-      if (!token) {
-        setDiag(`${reason} → no JWT for MJPEG`);
-        setPhase("failed");
-        setProtocol("none");
-        return;
-      }
-      setProtocol("mjpeg");
-      setPhase("connecting");
-      pcRef.current?.close();
-      pcRef.current = null;
-      if (hlsRef.current) {
-        hlsRef.current.destroy();
-        hlsRef.current = null;
-      }
-      const url = `${API_BASE}/api/v1/stream/proxy/${cameraId}/mjpeg?token=${encodeURIComponent(token)}`;
-      setMjpegSrc(url);
-
-      const timer = setTimeout(() => {
-        // If still connecting after timeout, fail (img onLoad/onError should fire earlier)
-        setPhase((p) => {
-          if (p === "connecting") {
-            setDiag(`${reason} → MJPEG timeout`);
-            setProtocol("none");
-            return "failed";
-          }
-          return p;
-        });
-      }, MJPEG_TIMEOUT_MS);
-
-      // Cleanup timer when effect re-runs via img handlers using data attribute
-      const img = imgRef.current;
-      if (img) {
-        (img as HTMLImageElement & { _mjpegTimer?: ReturnType<typeof setTimeout> })._mjpegTimer =
-          timer;
-      }
-    },
-    [cameraId]
-  );
-
-  const playHls = useCallback(
-    (url: string, proto: Protocol, onFatal: () => void) => {
-      const video = videoRef.current;
-      if (!video) {
-        onFatal();
-        return;
-      }
-      pcRef.current?.close();
-      pcRef.current = null;
-      setMjpegSrc(null);
-      if (hlsRef.current) {
-        hlsRef.current.destroy();
-        hlsRef.current = null;
-      }
-
-      setProtocol(proto);
-      setPhase("connecting");
-
-      const withAuth = (xhr: XMLHttpRequest) => {
-        const token = getToken();
-        if (token && url.includes("/api/v1/stream/proxy")) {
-          xhr.setRequestHeader("Authorization", `Bearer ${token}`);
-        }
-      };
-
-      if (video.canPlayType("application/vnd.apple.mpegurl") && proto === "hls-cdn") {
-        video.src = url;
-        const t = setTimeout(() => {
-          if (video.readyState < 2) onFatal();
-        }, HLS_CDN_TIMEOUT_MS);
-        video.onloadeddata = () => {
-          clearTimeout(t);
-          video.play().catch(() => undefined);
-          markLive(proto);
-        };
-        video.onerror = () => {
-          clearTimeout(t);
-          onFatal();
-        };
-        return;
-      }
-
-      if (!Hls.isSupported()) {
-        onFatal();
-        return;
-      }
-
-      const hls = new Hls({
-        enableWorker: true,
-        lowLatencyMode: true,
-        xhrSetup: (xhr) => withAuth(xhr),
-      });
-      hlsRef.current = hls;
-      let settled = false;
-      const timer = setTimeout(() => {
-        if (!settled) {
-          settled = true;
-          onFatal();
-        }
-      }, HLS_CDN_TIMEOUT_MS);
-
-      hls.loadSource(url);
-      hls.attachMedia(video);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        video.play().catch(() => undefined);
-        markLive(proto);
-      });
-      hls.on(Hls.Events.ERROR, (_e, data) => {
-        if (data.fatal && !settled) {
-          settled = true;
-          clearTimeout(timer);
-          onFatal();
-        }
-      });
-    },
-    []
-  );
-
-  const startProxy = useCallback(
-    (reason: string) => {
-      setDiag(reason);
-      if (!proxyUrl) {
-        startMjpeg(`${reason} → no HLS proxy URL`);
-        return;
-      }
-      playHls(proxyUrl, "hls-proxy", () => startMjpeg(`${reason} → HLS proxy failed`));
-    },
-    [playHls, proxyUrl, startMjpeg]
-  );
-
-  const startCdnHls = useCallback(
-    (reason: string) => {
-      setDiag(reason);
-      if (!hlsUrl) {
-        startProxy(`${reason} → no CDN URL`);
-        return;
-      }
-      playHls(hlsUrl, "hls-cdn", () => startProxy(`${reason} → CDN HLS failed`));
-    },
-    [hlsUrl, playHls, startProxy]
-  );
-
-  useEffect(() => {
-    let cancelled = false;
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    startedAt.current = Date.now();
-    setPhase("connecting");
-    setProtocol("none");
-    setLatencyHint("—");
-    setDiag("");
-    cleanup();
-
-    const video = videoRef.current;
-    if (!video) return;
-
-    if (!whepProxyUrl && !whepUrl) {
-      startCdnHls("no WHEP URL");
-      return () => {
-        cancelled = true;
-        cleanup();
-      };
+  const startMjpeg = useCallback(() => {
+    clearTimers();
+    if (!cameraId) {
+      setPhase("failed");
+      setDiag("No camera id");
+      return;
+    }
+    const token = getToken();
+    if (!token) {
+      setPhase("failed");
+      setDiag("Not logged in");
+      return;
     }
 
-    setProtocol("whep");
-    const pc = new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-    });
-    pcRef.current = pc;
-    pc.addTransceiver("video", { direction: "recvonly" });
-    pc.addTransceiver("audio", { direction: "recvonly" });
+    setPhase("connecting");
+    setProtocol("mjpeg");
+    setDiag("Opening RTSP → MJPEG…");
+    const url = `${API_BASE}/api/v1/stream/proxy/${cameraId}/mjpeg?token=${encodeURIComponent(token)}&t=${Date.now()}`;
+    setMjpegSrc(url);
 
-    let whepLive = false;
+    const assumeLive = setTimeout(() => {
+      setPhase((p) => (p === "connecting" ? "live" : p));
+      setDiag("");
+    }, MJPEG_ASSUME_LIVE_MS);
 
-    pc.ontrack = (ev) => {
-      if (cancelled) return;
-      whepLive = true;
-      if (timeoutId) clearTimeout(timeoutId);
-      video.srcObject = ev.streams[0];
-      video.play().catch(() => undefined);
-      markLive("whep");
-    };
+    const hardFail = setTimeout(() => {
+      setPhase((p) => {
+        if (p !== "connecting") return p;
+        setDiag("RTSP/MJPEG timeout — close Corp8 portal tab, then Retry");
+        setMjpegSrc(null);
+        setProtocol("none");
+        return "failed";
+      });
+    }, MJPEG_TIMEOUT_MS);
 
-    pc.onconnectionstatechange = () => {
-      if (cancelled || whepLive) return;
-      if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
-        startCdnHls(`WebRTC ${pc.connectionState}`);
-      }
-    };
+    timersRef.current = [assumeLive, hardFail];
+  }, [cameraId]);
 
-    timeoutId = setTimeout(() => {
-      if (cancelled || whepLive) return;
-      startCdnHls("WHEP timeout 3.5s");
-    }, WHEP_TIMEOUT_MS);
-
-    (async () => {
-      try {
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        await new Promise<void>((resolve) => {
-          if (pc.iceGatheringState === "complete") return resolve();
-          const check = () => {
-            if (pc.iceGatheringState === "complete") {
-              pc.removeEventListener("icegatheringstatechange", check);
-              resolve();
-            }
-          };
-          pc.addEventListener("icegatheringstatechange", check);
-          setTimeout(resolve, 1200);
-        });
-        if (cancelled || whepLive) return;
-
-        const token = getToken();
-        const headers: Record<string, string> = { "Content-Type": "application/sdp" };
-        if (token) headers.Authorization = `Bearer ${token}`;
-
-        // Prefer backend signaling (Basic Auth stays server-side)
-        const signalingUrl = whepProxyUrl || whepUrl!;
-        const res = await fetch(signalingUrl, {
-          method: "POST",
-          headers,
-          body: pc.localDescription?.sdp || offer.sdp,
-        });
-        if (!res.ok) throw new Error(`WHEP ${res.status}`);
-        const answer = await res.text();
-        if (cancelled || whepLive) return;
-        await pc.setRemoteDescription({ type: "answer", sdp: answer });
-      } catch (e) {
-        if (cancelled || whepLive) return;
-        startCdnHls(e instanceof Error ? e.message : "WHEP error");
-      }
-    })();
-
+  useEffect(() => {
+    startMjpeg();
     return () => {
-      cancelled = true;
-      if (timeoutId) clearTimeout(timeoutId);
-      cleanup();
+      clearTimers();
+      setMjpegSrc(null);
     };
-  }, [whepUrl, whepProxyUrl, hlsUrl, cameraId, retryKey, cleanup, startCdnHls]);
-
-  const pill =
-    protocol === "whep" && phase === "live"
-      ? `WHEP ${latencyHint}`
-      : protocol === "hls-cdn" && phase === "live"
-        ? `HLS CDN`
-        : protocol === "hls-proxy" && phase === "live"
-          ? `HLS PROXY`
-          : protocol === "mjpeg" && phase === "live"
-            ? `MJPEG RTSP`
-            : phase === "connecting"
-              ? "HANDSHAKE…"
-              : "OFFLINE";
-
-  const pillClass =
-    protocol === "whep" && phase === "live"
-      ? "border-forest-500/40 bg-forest-500/20 text-forest-400"
-      : (protocol === "hls-cdn" || protocol === "hls-proxy" || protocol === "mjpeg") &&
-          phase === "live"
-        ? "border-saffron-500/40 bg-saffron-500/15 text-saffron-400"
-        : phase === "failed"
-          ? "border-rose-500/40 bg-rose-500/15 text-rose-400"
-          : "border-white/10 bg-black/40 text-chalk/60";
+  }, [cameraId, retryKey, startMjpeg]);
 
   const ffplayCmd = rtspUrl
     ? `ffplay -rtsp_transport tcp "${rtspUrl}"`
@@ -375,50 +102,63 @@ export default function StreamPlayer({
     }
   };
 
+  const pill =
+    protocol === "mjpeg" && phase === "live"
+      ? "MJPEG RTSP"
+      : phase === "connecting"
+        ? "CONNECTING…"
+        : "OFFLINE";
+
+  const pillClass =
+    phase === "live"
+      ? "border-saffron-500/40 bg-saffron-500/15 text-saffron-400"
+      : phase === "failed"
+        ? "border-rose-500/40 bg-rose-500/15 text-rose-400"
+        : "border-white/10 bg-black/50 text-chalk/60";
+
   return (
-    <div className={`relative overflow-hidden bg-ink-950 ${className || ""}`}>
-      <video
-        ref={videoRef}
-        autoPlay
-        playsInline
-        muted
-        className={`h-full w-full object-contain ${mjpegSrc ? "hidden" : ""}`}
-      />
-      {mjpegSrc && (
+    <div className={`relative overflow-hidden bg-black ${className || ""}`}>
+      {mjpegSrc ? (
         <img
           ref={imgRef}
           src={mjpegSrc}
           alt={externalId || "camera feed"}
           className="h-full w-full object-contain"
           onLoad={() => {
-            markLive("mjpeg");
+            clearTimers();
+            setPhase("live");
+            setProtocol("mjpeg");
+            setDiag("");
           }}
           onError={() => {
-            setDiag((d) => `${d || "proxy"} → MJPEG failed`);
+            clearTimers();
             setPhase("failed");
             setProtocol("none");
             setMjpegSrc(null);
+            setDiag("MJPEG request failed");
           }}
         />
+      ) : (
+        <div className="flex h-full min-h-[240px] w-full items-center justify-center bg-ink-950" />
       )}
 
       {phase === "connecting" && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-ink-950/75">
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-ink-950/70">
           <div className="h-8 w-8 animate-pulse border border-forest-500/40 border-t-forest-400" />
-          <span className="font-mono text-[10px] uppercase tracking-wider text-chalk/50">
-            Establishing feed…
+          <span className="font-mono text-[10px] uppercase tracking-wider text-chalk/60">
+            Connecting feed…
           </span>
-          {diag && <span className="max-w-[90%] truncate font-mono text-[9px] text-chalk/35">{diag}</span>}
+          {diag && <span className="font-mono text-[9px] text-chalk/40">{diag}</span>}
         </div>
       )}
 
       {phase === "failed" && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-ink-950/90 px-3 text-center">
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-ink-950/95 px-3 text-center">
           <span className="font-mono text-[10px] uppercase tracking-wider text-rose-400">
             Feed offline / RTSP direct only
           </span>
           <p className="font-mono text-[9px] text-chalk/45">
-            {externalId || "camera"} · ping {latencyHint} · {diag || "all stages failed"}
+            {externalId || "camera"} · {diag || "failed"}
           </p>
           <div className="mt-1 flex flex-wrap justify-center gap-2">
             <button
@@ -440,7 +180,7 @@ export default function StreamPlayer({
       )}
 
       <span
-        className={`absolute left-2 top-2 border px-2 py-0.5 font-mono text-[9px] uppercase tracking-wider ${pillClass}`}
+        className={`absolute left-2 top-2 z-10 border px-2 py-0.5 font-mono text-[9px] uppercase tracking-wider ${pillClass}`}
       >
         {pill}
       </span>
@@ -448,7 +188,7 @@ export default function StreamPlayer({
         <button
           type="button"
           onClick={copyRtsp}
-          className="absolute bottom-2 right-2 border border-white/10 bg-black/50 px-1.5 py-0.5 font-mono text-[8px] text-chalk/50 hover:text-chalk"
+          className="absolute bottom-2 right-2 z-10 border border-white/10 bg-black/60 px-1.5 py-0.5 font-mono text-[8px] text-chalk/50 hover:text-chalk"
           title={ffplayCmd}
         >
           {copied ? "COPIED" : "RTSP CLI"}

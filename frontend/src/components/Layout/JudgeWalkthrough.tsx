@@ -8,7 +8,7 @@ const STEPS = [
 ];
 
 export default function JudgeWalkthrough() {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const [step, setStep] = useState(0);
 
   if (!open) {
@@ -59,8 +59,8 @@ export default function JudgeWalkthrough() {
       <p className="mt-2 text-xs text-chalk/55">
         {step === 0 && "Login as admin → click Sync sandbox catalog (one IP session — brief)."}
         {step === 1 && "Press / or Ctrl+K → type cam04 or Paldi → map flies to camera."}
-        {step === 2 && "Open Live preview — WHEP → HLS CDN → HLS Proxy waterfall."}
-        {step === 3 && "Open Analytics → Export Gap Report CSV for Model 1 deliverable."}
+        {step === 2 && "Click a red pin — live preview opens in a popup (WHEP → HLS → MJPEG)."}
+        {step === 3 && "Tap empty map → Tactical scan (right rail) → Analytics export."}
       </p>
     </div>
   );
