@@ -389,7 +389,8 @@ function Dashboard() {
                     />
                   </div>
                   <p className="font-mono text-[9px] leading-relaxed text-chalk/35">
-                    Waterfall: WHEP (3.5s) → CDN HLS (4s) → authenticated proxy → offline HUD.
+                    Waterfall: WHEP → HLS → proxy → on-demand MJPEG (RTSP). Close the Corp8
+                    portal tab first — one web session per IP.
                   </p>
                 </>
               )}

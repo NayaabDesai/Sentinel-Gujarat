@@ -71,10 +71,14 @@ class Settings(BaseSettings):
         # No credentials configured — return unauthenticated (will fail on sandbox)
         return f"rtsp://{self.SANDBOX_RTSP_HOST}/stream/{cam_id}"
 
+    def whep_public_url(self, cam_id: str) -> str:
+        """Browser-safe WHEP path (no credentials — browsers strip userinfo from URLs)."""
+        return f"{self.SANDBOX_WHEP_BASE.rstrip('/')}/{cam_id}/whep"
+
     def whep_url(self, cam_id: str) -> str:
         """
-        Build a credentialed WHEP URL.
-        http://user%40domain:password@103.250.160.189:8889/stream/cam01/whep
+        Server-side credentialed WHEP URL for MediaMTX Basic Auth.
+        Prefer whep_public_url + Authorization header / signaling proxy for browsers.
         """
         base = self.SANDBOX_WHEP_BASE.rstrip("/")
         if self.SANDBOX_EMAIL and self.SANDBOX_PASSWORD:

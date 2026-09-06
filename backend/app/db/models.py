@@ -178,3 +178,5 @@ class StreamSession(Base):
     last_heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ref_count: Mapped[int] = mapped_column(Integer, default=1)
+
+    camera: Mapped["Camera"] = relationship()

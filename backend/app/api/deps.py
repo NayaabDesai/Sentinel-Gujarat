@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Query, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,21 +17,7 @@ from app.db.session import get_db
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
 
 
-async def get_current_user(
-    token: str | None = Depends(oauth2_scheme),
-    db: AsyncSession = Depends(get_db),
-    x_service_key: str | None = Header(default=None, alias="X-Service-Key"),
-) -> User | None:
-    if x_service_key and x_service_key == settings.INTERNAL_SERVICE_KEY:
-        return None
-
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
+async def _user_from_token(token: str, db: AsyncSession) -> User:
     credentials_exc = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -54,6 +40,24 @@ async def get_current_user(
     return user
 
 
+async def get_current_user(
+    token: str | None = Depends(oauth2_scheme),
+    db: AsyncSession = Depends(get_db),
+    x_service_key: str | None = Header(default=None, alias="X-Service-Key"),
+) -> User | None:
+    if x_service_key and x_service_key == settings.INTERNAL_SERVICE_KEY:
+        return None
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return await _user_from_token(token, db)
+
+
 async def get_current_active_user(
     current_user: User | None = Depends(get_current_user),
     x_service_key: str | None = Header(default=None, alias="X-Service-Key"),
@@ -66,6 +70,24 @@ async def get_current_active_user(
     if not current_user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Inactive user")
     return current_user
+
+
+async def get_stream_viewer(
+    db: AsyncSession = Depends(get_db),
+    bearer: str | None = Depends(oauth2_scheme),
+    token: str | None = Query(None, description="JWT for <img> MJPEG (cannot send Authorization)"),
+    x_service_key: str | None = Header(default=None, alias="X-Service-Key"),
+) -> User | None:
+    """Auth for stream proxies — Bearer header OR ?token= for MJPEG <img> tags."""
+    if x_service_key and x_service_key == settings.INTERNAL_SERVICE_KEY:
+        return None
+    raw = bearer or token
+    if not raw:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    user = await _user_from_token(raw, db)
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Inactive user")
+    return user
 
 
 def require_human_user(user: User | None) -> User:
