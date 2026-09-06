@@ -2,15 +2,17 @@ import { useEffect, useRef, useState } from "react";
 
 type Props = {
   whepUrl: string;
+  /** HTTP Basic Authorization header value from session (e.g. "Basic …") */
+  mediaAuth?: string | null;
   className?: string;
   onFailure?: () => void;
 };
 
 /**
  * Native WebRTC WHEP player for sub-second preview.
- * Endpoint contract: http://<HOST>:8889/stream/<id>/whep
+ * Endpoint: http://103.250.160.189:8889/stream/<id>/whep (+ Basic auth)
  */
-export default function WhepPlayer({ whepUrl, className, onFailure }: Props) {
+export default function WhepPlayer({ whepUrl, mediaAuth, className, onFailure }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -50,7 +52,6 @@ export default function WhepPlayer({ whepUrl, className, onFailure }: Props) {
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
 
-        // Wait briefly for ICE gathering on simple hosts
         await new Promise<void>((resolve) => {
           if (pc.iceGatheringState === "complete") return resolve();
           const check = () => {
@@ -63,11 +64,16 @@ export default function WhepPlayer({ whepUrl, className, onFailure }: Props) {
           setTimeout(resolve, 1500);
         });
 
+        const headers: Record<string, string> = {
+          "Content-Type": "application/sdp",
+        };
+        if (mediaAuth) {
+          headers.Authorization = mediaAuth;
+        }
+
         const res = await fetch(whepUrl, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/sdp",
-          },
+          headers,
           body: pc.localDescription?.sdp || offer.sdp,
         });
 
@@ -95,7 +101,7 @@ export default function WhepPlayer({ whepUrl, className, onFailure }: Props) {
         video.srcObject = null;
       }
     };
-  }, [whepUrl, onFailure]);
+  }, [whepUrl, mediaAuth, onFailure]);
 
   return (
     <div className={`relative overflow-hidden bg-ink-950 ${className || ""}`}>

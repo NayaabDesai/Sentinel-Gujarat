@@ -35,6 +35,7 @@ export type StreamSession = {
   whep_url: string;
   hls_url: string;
   rtsp_url: string | null;
+  media_auth: string | null;
   active: boolean;
 };
 

@@ -37,6 +37,8 @@ class SessionOut(BaseModel):
     whep_url: str
     hls_url: str
     rtsp_url: str | None
+    # Browser clients: use Authorization header (URL userinfo is unreliable in fetch)
+    media_auth: str | None = None
     active: bool
 
 
@@ -82,9 +84,11 @@ async def start_session(payload: SessionStart, db: AsyncSession = Depends(get_db
         camera_id=cam.id,
         external_id=cam.external_id,
         protocol=session.protocol,
-        whep_url=settings.whep_url(stream_id),
-        hls_url=settings.hls_url(stream_id),
-        rtsp_url=cam.rtsp_url,
+        # No embedded userinfo for browser fetch — use media_auth header instead
+        whep_url=settings.whep_url(stream_id, embed_auth=False),
+        hls_url=settings.hls_url(stream_id, embed_auth=False),
+        rtsp_url=cam.rtsp_url or settings.rtsp_url(cam.external_id),
+        media_auth=settings.media_auth_header,
         active=True,
     )
 
@@ -157,9 +161,9 @@ async def list_active(db: AsyncSession = Depends(get_db)):
             by_camera[key] = {
                 "camera_id": key,
                 "external_id": cam.external_id,
-                "rtsp_url": cam.rtsp_url,
-                "whep_url": settings.whep_url(stream_id),
-                "hls_url": settings.hls_url(stream_id),
+                "rtsp_url": cam.rtsp_url or settings.rtsp_url(cam.external_id),
+                "whep_url": settings.whep_url(stream_id, embed_auth=False),
+                "hls_url": settings.hls_url(stream_id, embed_auth=False),
                 "session_count": 0,
             }
         by_camera[key]["session_count"] += 1

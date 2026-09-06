@@ -23,6 +23,7 @@ export default function App() {
   const [selected, setSelected] = useState<Camera | null>(null);
   const [useHls, setUseHls] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [mediaAuth, setMediaAuth] = useState<string | null>(null);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -71,6 +72,7 @@ export default function App() {
         }
         const session = await api.startSession(full.id, CLIENT_ID, "whep");
         setSessionId(session.session_id);
+        setMediaAuth(session.media_auth);
         setSelected({
           ...full,
           whep_url: session.whep_url,
@@ -239,11 +241,16 @@ export default function App() {
                     {!useHls && selected.whep_url ? (
                       <WhepPlayer
                         whepUrl={selected.whep_url}
+                        mediaAuth={mediaAuth}
                         className="h-full w-full"
                         onFailure={() => setUseHls(true)}
                       />
                     ) : selected.hls_url ? (
-                      <HlsPlayer hlsUrl={selected.hls_url} className="h-full w-full" />
+                      <HlsPlayer
+                        hlsUrl={selected.hls_url}
+                        mediaAuth={mediaAuth}
+                        className="h-full w-full"
+                      />
                     ) : (
                       <div className="flex h-full items-center justify-center text-sm text-chalk/50">
                         No stream URL

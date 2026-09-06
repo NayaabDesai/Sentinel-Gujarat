@@ -1,4 +1,4 @@
-"""Background worker polling http://<HOST>/api/ingest — dynamic catalog discovery."""
+"""Background worker polling https://cctv.corp8.cloud/cameras.json — dynamic catalog."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-import httpx
 from geoalchemy2.elements import WKTElement
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,29 +14,47 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.db.models import Camera, CameraStatus, Department
 from app.db.session import AsyncSessionLocal
+from app.services.sandbox_auth import fetch_authenticated_json
 
 logger = logging.getLogger("sentinel.catalog_sync")
 
 
-async def fetch_sandbox_catalog() -> list[dict[str, Any]]:
-    """Query sandbox ingest endpoint. Never hardcode camera URLs."""
-    url = settings.SANDBOX_INGEST_URL
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        data = resp.json()
-
+def _normalize_catalog(data: Any) -> list[dict[str, Any]]:
+    """Accept list/dict/cameras.json shapes; always return list of dicts with at least id."""
     if isinstance(data, list):
-        return data
-    if isinstance(data, dict):
+        items = data
+    elif isinstance(data, dict):
+        items = None
         for key in ("cameras", "streams", "data", "items", "results"):
             if key in data and isinstance(data[key], list):
-                return data[key]
-        # Single-camera object
-        if "id" in data or "camera_id" in data:
-            return [data]
-    logger.warning("Unexpected ingest payload type: %s", type(data))
-    return []
+                items = data[key]
+                break
+        if items is None:
+            if "id" in data or "camera_id" in data:
+                items = [data]
+            else:
+                items = [
+                    ({"id": k, **v} if isinstance(v, dict) else {"id": k})
+                    for k, v in data.items()
+                    if not str(k).startswith("_")
+                ]
+    else:
+        logger.warning("Unexpected ingest payload type: %s", type(data))
+        return []
+
+    out: list[dict[str, Any]] = []
+    for item in items:
+        if isinstance(item, str):
+            out.append({"id": item.strip()})
+        elif isinstance(item, dict):
+            out.append(item)
+    return out
+
+
+async def fetch_sandbox_catalog() -> list[dict[str, Any]]:
+    """Query sandbox cameras.json via portal session login. Never hardcode camera URLs."""
+    data = await fetch_authenticated_json(settings.SANDBOX_INGEST_URL)
+    return _normalize_catalog(data)
 
 
 def _extract(item: dict[str, Any]) -> dict[str, Any]:
@@ -46,6 +63,11 @@ def _extract(item: dict[str, Any]) -> dict[str, Any]:
     ).strip()
     name = str(item.get("name") or item.get("label") or external_id)
     rtsp = item.get("rtsp_url") or item.get("rtsp") or item.get("url")
+    if not rtsp and external_id:
+        rtsp = settings.rtsp_url(external_id)
+    elif rtsp and settings.has_sandbox_auth and "@" not in str(rtsp).split("://", 1)[-1].split("/", 1)[0]:
+        rtsp = settings.rtsp_url(external_id)
+
     whep = item.get("whep") or item.get("whep_path") or external_id
     hls = item.get("hls") or item.get("hls_path") or external_id
     lat = item.get("latitude", item.get("lat"))
@@ -60,11 +82,32 @@ def _extract(item: dict[str, Any]) -> dict[str, Any]:
         "latitude": float(lat) if lat is not None else None,
         "longitude": float(lon) if lon is not None else None,
         "department_code": str(dept).upper() if dept else None,
-        "meta": {k: v for k, v in item.items() if k not in {
-            "id", "camera_id", "stream_id", "name", "label", "rtsp_url", "rtsp", "url",
-            "whep", "whep_path", "hls", "hls_path", "latitude", "lat", "longitude", "lon",
-            "department", "department_code", "dept",
-        }},
+        "meta": {
+            k: v
+            for k, v in item.items()
+            if k
+            not in {
+                "id",
+                "camera_id",
+                "stream_id",
+                "name",
+                "label",
+                "rtsp_url",
+                "rtsp",
+                "url",
+                "whep",
+                "whep_path",
+                "hls",
+                "hls_path",
+                "latitude",
+                "lat",
+                "longitude",
+                "lon",
+                "department",
+                "department_code",
+                "dept",
+            }
+        },
     }
 
 
@@ -168,7 +211,6 @@ class CatalogSyncWorker:
         return {"fetched": len(catalog), "created": created, "updated": updated, "errors": errors}
 
     async def run(self) -> None:
-        # Initial sync + periodic refresh
         while not self._stop.is_set():
             try:
                 async with AsyncSessionLocal() as db:

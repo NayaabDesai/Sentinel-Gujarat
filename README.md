@@ -17,7 +17,7 @@ Unified CCTV **Central Registry & GIS Platform (Model 1)** with on-demand live v
 ```bash
 cd sentinel-gujarat
 cp .env.example .env
-# Set SANDBOX_HOST to the machine serving /api/ingest, WHEP :8889, HLS /live
+# Set SANDBOX_EMAIL / SANDBOX_PASSWORD in .env (portal credentials)
 
 docker compose up --build
 ```
@@ -43,21 +43,23 @@ python capture_worker.py
 
 | Contract | URL |
 |----------|-----|
-| Catalog | `GET http://<HOST>/api/ingest` |
-| WHEP | `http://<HOST>:8889/stream/<id>/whep` |
-| HLS | `http://<HOST>/live/stream/<id>/index.m3u8` |
+| Catalog | `GET https://cctv.corp8.cloud/cameras.json` |
+| HLS | `https://cctv.corp8.cloud/<id>/index.m3u8` |
+| RTSP | `rtsp://<email>:<password>@103.250.160.189:8554/stream/<id>` |
+| WHEP | `http://<email>:<password>@103.250.160.189:8889/stream/<id>/whep` |
 
-Camera IDs and RTSP URLs are discovered dynamically by `catalog_sync` and the capture worker.
+Camera IDs (`cam01`…`cam30`) and stream URLs are discovered dynamically by `catalog_sync` and the capture worker. Encode `@` in email as `%40` in RTSP/WHEP URLs (the app does this automatically from `SANDBOX_EMAIL` / `SANDBOX_PASSWORD`).
 
 ## Sandbox rules implemented
 
 1. **RTSP over TCP** — `OPENCV_FFMPEG_CAPTURE_OPTIONS=rtsp_transport;tcp` in worker + compose  
-2. **Dynamic catalog** — polls `/api/ingest` on a timer; never hardcodes stream URLs  
+2. **Dynamic catalog** — polls `cameras.json` on a timer; never hardcodes stream URLs  
 3. **Monotonic PTS** — velocity from `CAP_PROP_POS_MSEC` ΔPTS only  
 4. **Backoff reconnect** — 2s → 30s cap  
 5. **Non-fatal join** — pre-IDR decode warnings logged and skipped  
 6. **Scene discontinuity** — tracker + MOG2 reset on loop/PTS jumps  
 7. **On-demand ingest** — RTSP opens only for cameras with active `/api/v1/stream` sessions  
+8. **Auth** — email+password embedded for RTSP; Basic auth header for WHEP/HLS browser clients  
 
 ## Multi-modal onboarding
 

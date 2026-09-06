@@ -29,15 +29,21 @@ services:
     build: ./backend
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql+asyncpg://sentinel:sentinel@db:5432/sentinel_gujarat
       REDIS_URL: redis://redis:6379/0
-      SANDBOX_HOST: ${SANDBOX_HOST:-host.docker.internal}
-      SANDBOX_INGEST_URL: ${SANDBOX_INGEST_URL:-http://host.docker.internal/api/ingest}
-      SANDBOX_WHEP_BASE: ${SANDBOX_WHEP_BASE:-http://host.docker.internal:8889/stream}
-      SANDBOX_HLS_BASE: ${SANDBOX_HLS_BASE:-http://host.docker.internal/live/stream}
-      CATALOG_REFRESH_SECONDS: "60"
-      CORS_ORIGINS: http://localhost:5173,http://localhost:3000
+      SANDBOX_HOST: ${SANDBOX_HOST:-cctv.corp8.cloud}
+      SANDBOX_INGEST_URL: ${SANDBOX_INGEST_URL:-https://cctv.corp8.cloud/cameras.json}
+      SANDBOX_HLS_BASE: ${SANDBOX_HLS_BASE:-https://cctv.corp8.cloud}
+      SANDBOX_MEDIA_IP: ${SANDBOX_MEDIA_IP:-103.250.160.189}
+      SANDBOX_WHEP_BASE: ${SANDBOX_WHEP_BASE:-http://103.250.160.189:8889/stream}
+      SANDBOX_RTSP_BASE: ${SANDBOX_RTSP_BASE:-rtsp://103.250.160.189:8554/stream}
+      SANDBOX_EMAIL: ${SANDBOX_EMAIL}
+      SANDBOX_PASSWORD: ${SANDBOX_PASSWORD}
+      CATALOG_REFRESH_SECONDS: ${CATALOG_REFRESH_SECONDS:-60}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
       OPENCV_FFMPEG_CAPTURE_OPTIONS: rtsp_transport;tcp
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -49,13 +55,19 @@ services:
 
   worker:
     build: ./worker
+    env_file:
+      - .env
     environment:
-      SANDBOX_HOST: ${SANDBOX_HOST:-host.docker.internal}
-      SANDBOX_INGEST_URL: ${SANDBOX_INGEST_URL:-http://host.docker.internal/api/ingest}
+      SANDBOX_HOST: ${SANDBOX_HOST:-cctv.corp8.cloud}
+      SANDBOX_INGEST_URL: ${SANDBOX_INGEST_URL:-https://cctv.corp8.cloud/cameras.json}
+      SANDBOX_MEDIA_IP: ${SANDBOX_MEDIA_IP:-103.250.160.189}
+      SANDBOX_RTSP_BASE: ${SANDBOX_RTSP_BASE:-rtsp://103.250.160.189:8554/stream}
+      SANDBOX_EMAIL: ${SANDBOX_EMAIL}
+      SANDBOX_PASSWORD: ${SANDBOX_PASSWORD}
       BACKEND_URL: http://backend:8000
       REDIS_URL: redis://redis:6379/0
       OPENCV_FFMPEG_CAPTURE_OPTIONS: rtsp_transport;tcp
-      CATALOG_REFRESH_SECONDS: "60"
+      CATALOG_REFRESH_SECONDS: ${CATALOG_REFRESH_SECONDS:-60}
       ACTIVE_POLL_SECONDS: "5"
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -71,7 +83,7 @@ services:
       - "5173:5173"
     environment:
       VITE_API_BASE: http://localhost:8000
-      VITE_SANDBOX_HOST: ${SANDBOX_HOST:-localhost}
+      VITE_SANDBOX_HOST: ${SANDBOX_HOST:-cctv.corp8.cloud}
     depends_on:
       - backend
 

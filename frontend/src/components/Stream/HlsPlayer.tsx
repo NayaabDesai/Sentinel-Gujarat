@@ -3,13 +3,15 @@ import Hls from "hls.js";
 
 type Props = {
   hlsUrl: string;
+  /** HTTP Basic Authorization header value from session */
+  mediaAuth?: string | null;
   className?: string;
 };
 
 /**
- * HLS.js fallback: http://<HOST>/live/stream/<id>/index.m3u8
+ * HLS.js fallback: https://cctv.corp8.cloud/<id>/index.m3u8
  */
-export default function HlsPlayer({ hlsUrl, className }: Props) {
+export default function HlsPlayer({ hlsUrl, mediaAuth, className }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -19,6 +21,7 @@ export default function HlsPlayer({ hlsUrl, className }: Props) {
     setError(null);
 
     if (video.canPlayType("application/vnd.apple.mpegurl")) {
+      // Safari: native HLS can't easily attach Basic auth — try URL as-is
       video.src = hlsUrl;
       video.play().catch(() => undefined);
       return () => {
@@ -35,6 +38,11 @@ export default function HlsPlayer({ hlsUrl, className }: Props) {
     const hls = new Hls({
       enableWorker: true,
       lowLatencyMode: true,
+      xhrSetup: mediaAuth
+        ? (xhr) => {
+            xhr.setRequestHeader("Authorization", mediaAuth);
+          }
+        : undefined,
     });
     hls.loadSource(hlsUrl);
     hls.attachMedia(video);
@@ -48,7 +56,7 @@ export default function HlsPlayer({ hlsUrl, className }: Props) {
     return () => {
       hls.destroy();
     };
-  }, [hlsUrl]);
+  }, [hlsUrl, mediaAuth]);
 
   return (
     <div className={`relative overflow-hidden bg-ink-950 ${className || ""}`}>

@@ -35,13 +35,34 @@ logging.basicConfig(
 )
 logger = logging.getLogger("sentinel.capture")
 
-SANDBOX_INGEST_URL = os.environ.get("SANDBOX_INGEST_URL", "http://localhost/api/ingest")
+SANDBOX_INGEST_URL = os.environ.get("SANDBOX_INGEST_URL", "https://cctv.corp8.cloud/cameras.json")
+SANDBOX_RTSP_BASE = os.environ.get("SANDBOX_RTSP_BASE", "rtsp://103.250.160.189:8554/stream")
+SANDBOX_EMAIL = os.environ.get("SANDBOX_EMAIL", "")
+SANDBOX_PASSWORD = os.environ.get("SANDBOX_PASSWORD", "")
 BACKEND_URL = os.environ.get("BACKEND_URL", "http://localhost:8000")
 CATALOG_REFRESH_SECONDS = int(os.environ.get("CATALOG_REFRESH_SECONDS", "60"))
 ACTIVE_POLL_SECONDS = float(os.environ.get("ACTIVE_POLL_SECONDS", "5"))
 BACKOFF_START = 2.0
 BACKOFF_CAP = 30.0
 PTS_JUMP_THRESHOLD_MS = 2000.0  # scene discontinuity / loop cut
+
+
+def _rtsp_url_for(camera_id: str) -> str:
+    """rtsp://email:password@host:8554/stream/<id> per integrator guide."""
+    from urllib.parse import quote, unquote, urlparse, urlunparse
+
+    sid = camera_id.strip().strip("/")
+    raw = f"{SANDBOX_RTSP_BASE.rstrip('/')}/{sid}"
+    email = unquote(SANDBOX_EMAIL.strip())
+    if not email or not SANDBOX_PASSWORD:
+        return raw
+    parsed = urlparse(raw)
+    host = parsed.hostname or "103.250.160.189"
+    port = f":{parsed.port}" if parsed.port else ""
+    netloc = f"{quote(email, safe='')}:{quote(SANDBOX_PASSWORD, safe='')}@{host}{port}"
+    return urlunparse(
+        (parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
+    )
 
 
 @dataclass
@@ -77,28 +98,84 @@ class CaptureSupervisor:
         self._running = False
         logger.info("Shutting down capture supervisor…")
 
-    # --- Rule 2: Dynamic catalog discovery ---
+    # --- Rule 2: Dynamic catalog discovery (prefer backend DB; avoid double portal login) ---
     def refresh_catalog(self) -> None:
         now = time.monotonic()
         if now - self._last_catalog_fetch < CATALOG_REFRESH_SECONDS and self._catalog:
             return
         try:
-            with httpx.Client(timeout=30.0) as client:
-                resp = client.get(SANDBOX_INGEST_URL)
-                resp.raise_for_status()
-                data = resp.json()
-            items = data if isinstance(data, list) else data.get("cameras") or data.get("streams") or data.get("data") or []
             catalog: dict[str, str] = {}
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                eid = str(item.get("id") or item.get("camera_id") or item.get("stream_id") or "").strip()
-                rtsp = item.get("rtsp_url") or item.get("rtsp") or item.get("url")
-                if eid and rtsp:
-                    catalog[eid] = str(rtsp)
+            # Primary: cameras already synced into our API (backend does portal login)
+            with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+                resp = client.get(f"{BACKEND_URL.rstrip('/')}/api/v1/ingest/worker-catalog")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    for item in data.get("cameras") or []:
+                        eid = str(item.get("external_id") or "").strip()
+                        if not eid:
+                            continue
+                        catalog[eid] = str(item.get("rtsp_url") or _rtsp_url_for(eid))
+                else:
+                    logger.warning(
+                        "Backend worker-catalog HTTP %s — falling back to portal login",
+                        resp.status_code,
+                    )
+
+            # Fallback: direct portal session (may 403 under Cloudflare when backend also logs in)
+            if not catalog:
+                from urllib.parse import unquote, urljoin, urlparse
+
+                email = unquote(SANDBOX_EMAIL.strip())
+                if not email or not SANDBOX_PASSWORD:
+                    raise RuntimeError("SANDBOX_EMAIL / SANDBOX_PASSWORD required for cameras.json")
+
+                parsed = urlparse(SANDBOX_INGEST_URL)
+                login_url = urljoin(f"{parsed.scheme}://{parsed.netloc}", "/auth/login")
+
+                with httpx.Client(timeout=30.0, follow_redirects=False) as client:
+                    login = client.post(
+                        login_url,
+                        data={"email": email, "password": SANDBOX_PASSWORD},
+                    )
+                    if login.status_code == 200 and "Email or access password is incorrect" in login.text:
+                        raise RuntimeError("Sandbox login failed: incorrect email/password")
+                    if login.status_code not in (200, 302, 303):
+                        login.raise_for_status()
+                    resp = client.get(SANDBOX_INGEST_URL)
+                    if resp.status_code in (301, 302, 303) and resp.headers.get("location"):
+                        resp = client.get(urljoin(SANDBOX_INGEST_URL, resp.headers["location"]))
+                    resp.raise_for_status()
+                    if "json" not in resp.headers.get("content-type", "") and resp.text.lstrip().startswith(
+                        "<"
+                    ):
+                        raise RuntimeError("Catalog returned HTML after login — check credentials")
+                    data = resp.json()
+
+                if isinstance(data, list):
+                    items = data
+                elif isinstance(data, dict):
+                    items = data.get("cameras") or data.get("streams") or data.get("data") or []
+                    if not items and ("id" in data or "camera_id" in data):
+                        items = [data]
+                else:
+                    items = []
+                for item in items:
+                    if isinstance(item, str):
+                        eid = item.strip()
+                        if eid:
+                            catalog[eid] = _rtsp_url_for(eid)
+                        continue
+                    if not isinstance(item, dict):
+                        continue
+                    eid = str(
+                        item.get("id") or item.get("camera_id") or item.get("stream_id") or ""
+                    ).strip()
+                    if eid:
+                        catalog[eid] = _rtsp_url_for(eid)
+
             self._catalog = catalog
             self._last_catalog_fetch = now
-            logger.info("Catalog refreshed: %d cameras from %s", len(catalog), SANDBOX_INGEST_URL)
+            logger.info("Catalog refreshed: %d cameras", len(catalog))
         except Exception as e:
             logger.error("Catalog refresh failed: %s", e)
 
@@ -115,8 +192,8 @@ class CaptureSupervisor:
                 if eid:
                     active.add(str(eid))
                     # Prefer live URL from session payload if catalog missing
-                    if cam.get("rtsp_url") and eid not in self._catalog:
-                        self._catalog[eid] = cam["rtsp_url"]
+                    if eid not in self._catalog:
+                        self._catalog[eid] = cam.get("rtsp_url") or _rtsp_url_for(eid)
             return active
         except Exception as e:
             logger.warning("Active session poll failed (will not open new feeds): %s", e)

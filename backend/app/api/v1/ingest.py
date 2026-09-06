@@ -23,6 +23,26 @@ async def proxy_ingest():
     }
 
 
+@router.get("/worker-catalog")
+async def worker_catalog(db: AsyncSession = Depends(get_db)):
+    """Internal feed map for the capture worker (IDs + authenticated RTSP URLs)."""
+    from sqlalchemy import select
+
+    from app.db.models import Camera
+
+    rows = (await db.execute(select(Camera).where(Camera.is_active.is_(True)))).scalars().all()
+    cameras = []
+    for cam in rows:
+        eid = cam.external_id
+        cameras.append(
+            {
+                "external_id": eid,
+                "rtsp_url": cam.rtsp_url or settings.rtsp_url(eid),
+            }
+        )
+    return {"count": len(cameras), "cameras": cameras}
+
+
 @router.post("/sync")
 async def trigger_sync(db: AsyncSession = Depends(get_db)):
     worker = CatalogSyncWorker()
